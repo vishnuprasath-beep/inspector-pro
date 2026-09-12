@@ -1,0 +1,33 @@
+{
+  "name": "sih-inspection-backend",
+  "version": "1.0.0",
+  "description": "Smart Asset Inspection, Defect Tracking & Compliance Monitoring Backend API",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "seed": "node src/seed/seedData.js"
+  },
+  "keywords": [
+    "inspection",
+    "defects",
+    "compliance",
+    "geofencing",
+    "sih",
+    "smart-india-hackathon"
+  ],
+  "author": "SIH Team",
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jpeg-js": "^0.4.4",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "onnxruntime-node": "^1.29.0",
+    "pngjs": "^7.0.0",
+    "uuid": "^9.0.1"
+  }
+}

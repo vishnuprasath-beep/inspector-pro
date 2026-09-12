@@ -1,0 +1,32 @@
+services:
+  # 1. Public Backend Web Service
+  - type: web
+    name: inspectra-pro-api
+    env: node
+    plan: free
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && node src/server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5000
+      - key: JWT_SECRET
+        value: sih2024_smart_inspection_super_secret_jwt_key_984729184719284
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: CORS_ORIGIN
+        value: "*"
+    healthCheckPath: /api/health
+
+  # 2. Public Frontend Static Site
+  - type: web
+    name: inspectra-pro-dashboard
+    env: static
+    plan: free
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

@@ -1,0 +1,20 @@
+# Inspectra Pro — Construction Safety & Defect Dataset Configuration
+# Standard Ultralytics YOLOv8/YOLO11 Dataset Spec
+
+path: ./yolo_pipeline/dataset # root dataset directory
+train: images/train           # train images (relative to 'path')
+val: images/val               # val images (relative to 'path')
+test: images/test             # test images (optional)
+
+# Classes: Strictly authentic construction-site safety PPE and infrastructure defects
+# Reference: Construction Safety Dataset (CSS / Hard Hat Workers Benchmark)
+nc: 8
+names:
+  0: worker
+  1: hard_hat
+  2: no_hard_hat
+  3: safety_vest
+  4: no_safety_vest
+  5: machinery
+  6: structural_crack
+  7: concrete_spalling
