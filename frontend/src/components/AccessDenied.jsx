@@ -8,11 +8,11 @@ export default function AccessDenied({ userRole, targetRoute, requiredRole }) {
   const getAuthorizedPath = (role) => {
     switch (role) {
       case 'ADMIN':
-        return { path: '/admin-dashboard', label: 'Go to Admin Dashboard' };
+        return { path: '/admin-dashboard', label: 'Go to Management Portal (Admin)' };
       case 'DIRECTOR':
-        return { path: '/director-dashboard', label: 'Go to Director Dashboard' };
+        return { path: '/admin-dashboard', label: 'Go to Management Portal (Director)' };
       case 'SUPERVISOR':
-        return { path: '/supervisor-dashboard', label: 'Go to Supervisor Dashboard' };
+        return { path: '/admin-dashboard', label: 'Go to Management Portal (Supervisor)' };
       case 'INSPECTOR':
       default:
         return { path: '/field-inspector', label: 'Go to Field Inspector Portal' };

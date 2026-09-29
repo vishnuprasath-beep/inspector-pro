@@ -5,9 +5,9 @@ const authorizeRoles = require('../middleware/roleMiddleware');
 const db = require('../config/db');
 const { TABLES, ROLES } = require('../models/schema');
 
-// Strict DIRECTOR-only barrier
+// DIRECTOR and ADMIN barrier
 router.use(authenticateJWT);
-router.use(authorizeRoles(ROLES.DIRECTOR));
+router.use(authorizeRoles(ROLES.DIRECTOR, ROLES.ADMIN));
 
 /**
  * GET /api/director/executive-summary

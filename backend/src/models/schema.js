@@ -30,7 +30,8 @@ const TABLES = {
   AI_MODEL_VERSIONS: 'ai_model_versions',
   VERIFIED_AI_SAMPLES: 'verified_ai_samples',
   OFFLINE_SYNC_RECORDS: 'offline_sync_records',
-  QR_CODES: 'qr_codes'
+  QR_CODES: 'qr_codes',
+  LIVE_SHARE_SIGNALS: 'live_share_signals'
 };
 
 const ROLES = {

@@ -1,9 +1,9 @@
 const db = require('../config/db');
 const { TABLES } = require('../models/schema');
-const { generateInspectionReportHtml } = require('../services/pdfService');
+const { streamInspectionPdf, generateInspectionReportHtml } = require('../services/pdfService');
 
 /**
- * Generate and Stream Printable PDF / HTML Report for Inspection
+ * Generate and Stream Printable PDF Report for Inspection
  */
 async function generateInspectionPdfReport(req, res) {
   try {
@@ -23,23 +23,37 @@ async function generateInspectionPdfReport(req, res) {
     const evidence = db.find(TABLES.INSPECTION_EVIDENCE, { inspection_id: inspection.id });
 
     const inspectorPayload = {
-      name: inspectorUser ? inspectorUser.name : 'Authorized Inspector',
+      name: inspectorUser ? inspectorUser.name : (inspector ? inspector.name : 'Authorized Inspector'),
       employee_code: inspector ? inspector.employee_code : 'INSP-AUTH'
     };
 
-    const htmlContent = generateInspectionReportHtml(
+    if (req.query.format === 'html') {
+      const htmlContent = generateInspectionReportHtml(
+        inspection,
+        site,
+        inspectorPayload,
+        template,
+        checklists,
+        defects,
+        evidence
+      );
+      res.setHeader('Content-Type', 'text/html');
+      res.setHeader('Content-Disposition', `inline; filename="Inspection-Report-${inspection.id}.html"`);
+      return res.send(htmlContent);
+    }
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="Inspection-Report-${inspection.id}.pdf"`);
+    streamInspectionPdf(
       inspection,
       site,
       inspectorPayload,
       template,
       checklists,
       defects,
-      evidence
+      evidence,
+      res
     );
-
-    res.setHeader('Content-Type', 'text/html');
-    res.setHeader('Content-Disposition', `inline; filename="Inspection-Report-${inspection.id}.html"`);
-    res.send(htmlContent);
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -61,7 +75,7 @@ async function exportCsv(req, res) {
       defects.forEach(d => {
         const insp = inspections.find(i => i.id === d.inspection_id) || {};
         const site = sites.find(s => s.id === insp.site_id) || {};
-        const cleanTitle = `"${d.title.replace(/"/g, '""')}"`;
+        const cleanTitle = `"${(d.title || 'Untitled').replace(/"/g, '""')}"`;
         const siteName = `"${(site.name || 'N/A').replace(/"/g, '""')}"`;
         csv += `${d.id},${cleanTitle},${d.severity},${d.status},${siteName},${d.deadline || ''},${d.created_at}\n`;
       });
@@ -83,7 +97,7 @@ async function exportCsv(req, res) {
       const insp = inspectors.find(ins => ins.id === i.inspector_id) || {};
       const user = users.find(u => u.id === insp.user_id) || {};
 
-      const title = `"${i.title.replace(/"/g, '""')}"`;
+      const title = `"${(i.title || 'Untitled').replace(/"/g, '""')}"`;
       const siteName = `"${(site.name || '').replace(/"/g, '""')}"`;
       const inspName = `"${(user.name || '').replace(/"/g, '""')}"`;
 

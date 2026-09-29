@@ -4,7 +4,8 @@ import {
   getLatestStreamState,
   sendAdminDirective 
 } from '../services/yoloVisionService';
-import { initAdminWebRtc } from '../services/cloudStreamService';
+import { startViewerSession, stopViewerSession } from '../services/liveShareService';
+import api from '../services/api';
 import { 
   Maximize2, 
   Minimize2, 
@@ -23,16 +24,24 @@ import {
   MapPin, 
   ShieldCheck,
   Video,
+  VideoOff,
   Eye,
   Sliders,
   Sparkles
 } from 'lucide-react';
 
-export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
+export default function InspectorCameraFullscreenModal({ 
+  isOpen, 
+  onClose, 
+  inspector = null, 
+  session = null, 
+  stream = null 
+}) {
   const [streamData, setStreamData] = useState(null);
-  const [webrtcStream, setWebrtcStream] = useState(null);
+  const [internalStream, setInternalStream] = useState(null);
+  const [activeInspector, setActiveInspector] = useState(inspector);
+  const [activeSession, setActiveSession] = useState(session);
   const [webrtcStatus, setWebrtcStatus] = useState('WAITING');
-  const [viewportMode, setViewportMode] = useState('AUTO'); // 'AUTO' | 'WEBRTC' | 'SNAPSHOT'
   const [fitMode, setFitMode] = useState('contain'); // 'contain' | 'cover'
   const [showHud, setShowHud] = useState(true);
   const [shutterFlash, setShutterFlash] = useState(false);
@@ -42,21 +51,87 @@ export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
 
   const containerRef = useRef(null);
   const videoRef = useRef(null);
-  const peerRef = useRef(null);
 
-  // 1. Subscribe to Live Inspection Stream & WebRTC on mount / when opened
+  // Active stream is either passed via prop or established internally
+  const currentStream = stream || internalStream;
+
+  // 1. Resolve active inspector session & subscribe when opened
   useEffect(() => {
     if (!isOpen) return;
 
-    // Load initial cached stream data
+    // Load initial cached telemetry
     const initial = getLatestStreamState();
     if (initial) setStreamData(initial);
 
-    // Subscribe to real-time telemetry stream (cross-tab + cloud SSE)
+    // If stream is already passed directly via props, bind immediately
+    if (stream) {
+      setWebrtcStatus('LIVE');
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {});
+      }
+      return;
+    }
+
+    // Otherwise, discover active live sessions from database
+    let isCancelled = false;
+    async function resolveActiveSession() {
+      try {
+        const res = await api.getActiveLiveShares();
+        if (isCancelled) return;
+        if (res.success && Array.isArray(res.active_sessions) && res.active_sessions.length > 0) {
+          const matchSession = session || res.active_sessions[0];
+          setActiveSession(matchSession);
+
+          // Connect using native WebRTC viewer
+          setWebrtcStatus('CONNECTING');
+          startViewerSession({
+            sessionId: matchSession.id,
+            role: 'ADMIN',
+            onRemoteStream: (remoteMedia, track) => {
+              if (isCancelled) return;
+              setInternalStream(remoteMedia);
+              setWebrtcStatus('LIVE');
+              if (videoRef.current && videoRef.current.srcObject !== remoteMedia) {
+                videoRef.current.srcObject = remoteMedia;
+                videoRef.current.play().catch(() => {});
+              }
+            },
+            onStateChange: ({ connectionState, hasVideo }) => {
+              if (isCancelled) return;
+              if (connectionState === 'connected' && hasVideo) {
+                setWebrtcStatus('LIVE');
+              } else if (connectionState === 'connecting') {
+                setWebrtcStatus('CONNECTING');
+              } else if (connectionState === 'failed' || connectionState === 'closed') {
+                setWebrtcStatus('DISCONNECTED');
+              }
+            },
+            onDisconnected: () => {
+              if (isCancelled) return;
+              setWebrtcStatus('DISCONNECTED');
+              setInternalStream(null);
+              if (videoRef.current) videoRef.current.srcObject = null;
+            }
+          }).catch(err => {
+            console.warn('[FullscreenModal] WebRTC connection error:', err);
+            setWebrtcStatus('ERROR');
+          });
+        } else {
+          setWebrtcStatus('NO_ACTIVE_STREAM');
+        }
+      } catch (err) {
+        console.warn('[FullscreenModal] Session check notice:', err.message);
+        setWebrtcStatus('NO_ACTIVE_STREAM');
+      }
+    }
+
+    resolveActiveSession();
+
+    // Subscribe to real-time mobile capture telemetry
     const unsubscribe = subscribeToInspectionStream((incoming) => {
       setStreamData(incoming);
 
-      // Handle capture event from inspector mobile
       if (incoming?.isCaptureEvent && incoming?.capturedPhotoUrl) {
         setEvidenceAlert({
           message: `📸 New evidence photo received from ${incoming.inspector?.name || 'Field Inspector'}!`,
@@ -67,33 +142,13 @@ export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
       }
     });
 
-    // Initialize WebRTC P2P Receiver for full 30 FPS video
-    try {
-      peerRef.current = initAdminWebRtc(
-        (remoteMedia) => {
-          setWebrtcStream(remoteMedia);
-          if (videoRef.current) {
-            videoRef.current.srcObject = remoteMedia;
-            videoRef.current.play().catch(e => console.warn('Fullscreen video play error:', e));
-          }
-        },
-        (status) => {
-          setWebrtcStatus(status);
-        }
-      );
-    } catch (err) {
-      console.warn('WebRTC init error in Fullscreen:', err);
-    }
-
     // Try HTML5 Fullscreen API
     const el = containerRef.current || document.documentElement;
     if (el.requestFullscreen) {
       el.requestFullscreen().catch(() => {});
-    } else if (el.webkitRequestFullscreen) {
-      el.webkitRequestFullscreen();
     }
 
-    // Handle Escape key and keyboard shortcuts
+    // Keyboard shortcuts
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
         handleClose();
@@ -104,28 +159,27 @@ export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
+      isCancelled = true;
       unsubscribe();
-      if (peerRef.current) {
-        peerRef.current.close();
+      if (!stream) {
+        stopViewerSession();
       }
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isOpen]);
+  }, [isOpen, session, stream]);
 
-  // Sync WebRTC stream to video ref
+  // Sync current stream to video ref
   useEffect(() => {
-    if (videoRef.current && webrtcStream) {
-      videoRef.current.srcObject = webrtcStream;
+    if (videoRef.current && currentStream) {
+      videoRef.current.srcObject = currentStream;
       videoRef.current.play().catch(() => {});
     }
-  }, [webrtcStream]);
+  }, [currentStream]);
 
   const handleClose = () => {
     if (document.fullscreenElement || document.webkitFullscreenElement) {
       if (document.exitFullscreen) {
         document.exitFullscreen().catch(() => {});
-      } else if (document.webkitExitFullscreen) {
-        document.webkitExitFullscreen();
       }
     }
     if (onClose) onClose();
@@ -147,56 +201,35 @@ export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
     setShutterFlash(true);
     setTimeout(() => setShutterFlash(false), 300);
 
-    const snapshotUrl = activeData.previewSnapshot || (videoRef.current ? captureVideoFrame(videoRef.current) : null);
-    
-    setEvidenceAlert({
-      message: '📸 Fullscreen evidence snapshot recorded in National Audit Ledger',
-      time: new Date().toLocaleTimeString(),
-      image: snapshotUrl
-    });
-    setTimeout(() => setEvidenceAlert(null), 6000);
-  };
+    if (videoRef.current) {
+      try {
+        const video = videoRef.current;
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth || 1280;
+        canvas.height = video.videoHeight || 720;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const snapshotUrl = canvas.toDataURL('image/jpeg', 0.9);
 
-  // Helper to grab frame from video element
-  const captureVideoFrame = (videoEl) => {
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width = videoEl.videoWidth || 1280;
-      canvas.height = videoEl.videoHeight || 720;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-      return canvas.toDataURL('image/jpeg', 0.9);
-    } catch (e) {
-      return null;
+        setEvidenceAlert({
+          message: '📸 Fullscreen evidence snapshot recorded in Audit Ledger',
+          time: new Date().toLocaleTimeString(),
+          image: snapshotUrl
+        });
+        setTimeout(() => setEvidenceAlert(null), 6000);
+      } catch (e) {}
     }
   };
 
   if (!isOpen) return null;
 
-  const activeData = streamData || {
-    streamActive: true,
-    inspector: { name: 'R. Saravanan', badge: 'INSP-2024-001', role: 'Lead Field Auditor' },
-    site: { name: 'Delhi Metro Central Terminal (Phase 2)', geofenceVerified: true },
-    activeChecklistItem: 'Pier P-14 Concrete Integrity & Spalling',
-    checklistProgress: { completed: 3, total: 4, percentage: 75 },
-    fps: 30.0,
-    primaryFinding: 'CONCRETE_SPALLING',
-    primarySeverity: 'CRITICAL',
-    detections: [
-      {
-        id: 'det-live-1',
-        label: 'Crack / Structural Spall',
-        confidenceScore: 96.4,
-        severity: 'CRITICAL',
-        specCode: 'IS 456:2000 Cl. 34.4',
-        color: '#ef4444',
-        box: { x: 26, y: 24, width: 48, height: 46 }
-      }
-    ],
-    previewSnapshot: 'https://images.unsplash.com/photo-1541888946425-d0fbb18615f8?w=1600&auto=format&fit=crop&q=80'
+  const resolvedInspector = inspector || activeInspector || {
+    name: activeSession?.inspector_name || 'Field Inspector',
+    badge: 'Lead Field Auditor',
+    site: 'Central Infrastructure Terminal'
   };
 
-  const isVideoVisible = webrtcStream && (viewportMode === 'WEBRTC' || viewportMode === 'AUTO');
+  const isVideoLive = !!currentStream && (webrtcStatus === 'LIVE');
 
   return (
     <div
@@ -237,10 +270,11 @@ export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          overflow: 'hidden'
+          overflow: 'hidden',
+          backgroundColor: '#000000'
         }}
       >
-        {/* Remote Live Video Track */}
+        {/* Remote Live Video Track - Always in DOM for proper autoplay */}
         <video
           ref={videoRef}
           playsInline
@@ -250,39 +284,59 @@ export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
             width: '100%',
             height: '100%',
             objectFit: fitMode,
-            display: isVideoVisible ? 'block' : 'none',
-            transform: 'scale(1)'
+            backgroundColor: '#000000',
+            display: isVideoLive ? 'block' : 'none'
           }}
         />
 
-        {/* Fallback Live Snapshot View */}
-        {!isVideoVisible && (
-          <img
-            src={activeData.previewSnapshot || 'https://images.unsplash.com/photo-1541888946425-d0fbb18615f8?w=1600&auto=format&fit=crop&q=80'}
-            alt="Field Inspector Camera"
+        {/* Fallback Display when Video is NOT Live */}
+        {!isVideoLive && (
+          <div
             style={{
-              width: '100%',
-              height: '100%',
-              objectFit: fitMode,
-              filter: 'brightness(0.95) contrast(1.05)'
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              textAlign: 'center',
+              padding: 30,
+              maxWidth: 500
             }}
-          />
+          >
+            {webrtcStatus === 'CONNECTING' ? (
+              <>
+                <div style={{ width: 50, height: 50, border: '4px solid rgba(56, 189, 248, 0.2)', borderTopColor: '#38bdf8', borderRadius: '50%', animation: 'spin 1s linear infinite', marginBottom: 16 }} />
+                <h3 style={{ color: '#ffffff', margin: '0 0 8px', fontSize: 18 }}>
+                  Establishing WebRTC Connection...
+                </h3>
+                <p style={{ color: '#94a3b8', fontSize: 13, margin: 0 }}>
+                  Exchanging SDP offer/answer and negotiating ICE candidates.
+                </p>
+              </>
+            ) : (
+              <>
+                <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(148, 163, 184, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(148, 163, 184, 0.2)', marginBottom: 16 }}>
+                  <VideoOff size={28} color="#94a3b8" />
+                </div>
+                <h3 style={{ color: '#ffffff', margin: '0 0 8px', fontSize: 18 }}>
+                  No Active Live Stream Available
+                </h3>
+                <p style={{ color: '#94a3b8', fontSize: 13, lineHeight: 1.5, margin: '0 0 20px' }}>
+                  No field inspector is currently broadcasting their live camera stream. To start a live stream, select an inspector in Inspector Monitoring and click [Request Camera Share].
+                </p>
+                <button
+                  onClick={handleClose}
+                  className="btn btn-primary"
+                  style={{ fontSize: 13, padding: '10px 20px' }}
+                >
+                  Return to Dashboard
+                </button>
+              </>
+            )}
+          </div>
         )}
 
-        {/* Subtle Cyberpunk Scanline Grid */}
-        <div 
-          style={{
-            position: 'absolute',
-            inset: 0,
-            backgroundImage: 'linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.02), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.02))',
-            backgroundSize: '100% 4px, 8px 100%',
-            pointerEvents: 'none',
-            opacity: 0.5
-          }}
-        />
-
-        {/* Real-Time Scaled YOLO Bounding Boxes */}
-        {activeData.detections?.map((det, idx) => (
+        {/* Real-Time Scaled YOLO Bounding Boxes (if present in streamData) */}
+        {isVideoLive && streamData?.detections?.map((det, idx) => (
           <div
             key={det.id || idx}
             style={{
@@ -299,7 +353,6 @@ export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
               transition: 'all 0.25s ease'
             }}
           >
-            {/* Top Defect Label Banner */}
             <div
               style={{
                 position: 'absolute',
@@ -308,75 +361,54 @@ export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
                 backgroundColor: det.color,
                 color: '#ffffff',
                 padding: '3px 10px',
-                borderRadius: 4,
-                fontSize: 12,
-                fontWeight: 800,
+                borderRadius: 5,
+                fontSize: 11,
+                fontWeight: 900,
                 display: 'flex',
                 alignItems: 'center',
-                gap: 8,
+                gap: 6,
                 boxShadow: '0 4px 12px rgba(0,0,0,0.7)',
-                letterSpacing: '0.5px'
+                whiteSpace: 'nowrap'
               }}
             >
-              <Zap size={13} />
+              <Zap size={12} />
               <span>{det.label}</span>
-              <span style={{ backgroundColor: 'rgba(0,0,0,0.4)', padding: '1px 6px', borderRadius: 4, fontSize: 11 }}>
-                {det.confidenceScore}%
+              <span style={{ backgroundColor: 'rgba(0,0,0,0.35)', padding: '1px 5px', borderRadius: 3, fontSize: 10 }}>
+                {(det.confidenceScore || 95).toFixed(1)}%
               </span>
-            </div>
-
-            {/* Bottom IS Code Tag */}
-            <div
-              style={{
-                position: 'absolute',
-                bottom: -24,
-                right: -2,
-                backgroundColor: 'rgba(15, 23, 42, 0.95)',
-                color: det.color,
-                border: `1px solid ${det.color}80`,
-                padding: '2px 8px',
-                borderRadius: 4,
-                fontSize: 11,
-                fontWeight: 700,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.5)'
-              }}
-            >
-              {det.specCode}
             </div>
           </div>
         ))}
       </div>
 
-      {/* 3. FLOATING TOP HUD (Always visible or toggleable) */}
+      {/* 3. Top HUD Bar */}
       {showHud && (
         <div
           style={{
             position: 'absolute',
-            top: 18,
-            left: 20,
-            right: 20,
+            top: 0,
+            left: 0,
+            right: 0,
+            padding: '16px 24px',
+            background: 'linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(2, 6, 23, 0.6) 75%, transparent 100%)',
             display: 'flex',
-            justifyContent: 'space-between',
             alignItems: 'center',
-            padding: '12px 20px',
-            backgroundColor: 'rgba(15, 23, 42, 0.85)',
-            backdropFilter: 'blur(16px)',
-            border: '1px solid rgba(56, 189, 248, 0.3)',
-            borderRadius: 14,
-            boxShadow: '0 12px 40px rgba(0, 0, 0, 0.6)',
-            zIndex: 100
+            justifyContent: 'space-between',
+            zIndex: 100000,
+            backdropFilter: 'blur(10px)',
+            borderBottom: '1px solid rgba(255, 255, 255, 0.08)'
           }}
         >
-          {/* Top Left: Live Status & Inspector Identity */}
+          {/* Top Left: Metadata & Status Badges */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span 
+              <div 
                 style={{ 
-                  width: 12, 
-                  height: 12, 
+                  width: 10, 
+                  height: 10, 
                   borderRadius: '50%', 
-                  backgroundColor: '#ef4444', 
-                  boxShadow: '0 0 12px #ef4444' 
+                  backgroundColor: isVideoLive ? '#10b981' : '#f59e0b',
+                  boxShadow: `0 0 10px ${isVideoLive ? '#10b981' : '#f59e0b'}`
                 }} 
               />
               <span style={{ fontSize: 13, fontWeight: 900, color: '#ffffff', letterSpacing: '0.5px' }}>
@@ -388,12 +420,12 @@ export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
                   fontWeight: 800,
                   padding: '2px 8px',
                   borderRadius: 20,
-                  backgroundColor: isVideoVisible ? 'rgba(16, 185, 129, 0.25)' : 'rgba(56, 189, 248, 0.2)',
-                  color: isVideoVisible ? '#34d399' : '#38bdf8',
-                  border: `1px solid ${isVideoVisible ? '#10b981' : '#38bdf8'}`
+                  backgroundColor: isVideoLive ? 'rgba(16, 185, 129, 0.25)' : 'rgba(245, 158, 11, 0.2)',
+                  color: isVideoLive ? '#34d399' : '#fbbf24',
+                  border: `1px solid ${isVideoLive ? '#10b981' : '#f59e0b'}`
                 }}
               >
-                {isVideoVisible ? '● 30 FPS WEBRTC P2P' : '☁️ CLOUD SYNC RELAY'}
+                {isVideoLive ? '● WEBRTC LIVE' : '○ STANDBY'}
               </span>
             </div>
 
@@ -401,22 +433,22 @@ export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#e2e8f0' }}>
               <User size={14} color="var(--accent-cyan)" />
-              <span>Auditor: <strong style={{ color: '#ffffff' }}>{activeData.inspector?.name || 'R. Saravanan'}</strong></span>
+              <span>Auditor: <strong style={{ color: '#ffffff' }}>{resolvedInspector.name}</strong></span>
               <span style={{ color: 'var(--accent-cyan)', fontSize: 11, fontWeight: 700 }}>
-                ({activeData.inspector?.badge || 'INSP-2024-001'})
+                ({resolvedInspector.badge_number || resolvedInspector.employee_code || resolvedInspector.id || 'INSP'})
               </span>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#94a3b8' }}>
-              <MapPin size={14} color="#10b981" />
-              <span>{activeData.site?.name || 'Assigned Site'}</span>
-              <span style={{ color: '#10b981', fontSize: 11, fontWeight: 700 }}>✓ GPS Locked</span>
-            </div>
+            {resolvedInspector.assigned_site_name && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#94a3b8' }}>
+                <MapPin size={14} color="#10b981" />
+                <span>{resolvedInspector.assigned_site_name}</span>
+              </div>
+            )}
           </div>
 
           {/* Top Right: Viewport Controls & Exit Fullscreen */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            {/* Aspect Mode Switch */}
             <button
               onClick={() => setFitMode(m => m === 'contain' ? 'cover' : 'contain')}
               style={{
@@ -438,298 +470,145 @@ export default function InspectorCameraFullscreenModal({ isOpen, onClose }) {
               <span>{fitMode === 'contain' ? 'Aspect: Fit' : 'Aspect: Fill'}</span>
             </button>
 
-            {/* Viewport Source Switch */}
-            <button
-              onClick={() => setViewportMode(m => m === 'AUTO' ? 'SNAPSHOT' : 'AUTO')}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '6px 12px',
-                backgroundColor: 'rgba(56, 189, 248, 0.12)',
-                border: '1px solid rgba(56, 189, 248, 0.3)',
-                borderRadius: 8,
-                color: '#38bdf8',
-                fontSize: 11.5,
-                fontWeight: 600,
-                cursor: 'pointer'
-              }}
-              title="Switch video source"
-            >
-              <Video size={13} />
-              <span>{viewportMode === 'AUTO' ? 'Source: Auto WebRTC' : 'Source: Cloud Frames'}</span>
-            </button>
+            {isVideoLive && (
+              <button
+                onClick={handleCaptureSnapshot}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '6px 14px',
+                  backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                  border: '1px solid #10b981',
+                  borderRadius: 8,
+                  color: '#34d399',
+                  fontSize: 11.5,
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                <Camera size={13} />
+                <span>Capture Snapshot</span>
+              </button>
+            )}
 
-            {/* Capture Snapshot Button */}
-            <button
-              onClick={handleCaptureSnapshot}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '7px 14px',
-                backgroundColor: 'rgba(16, 185, 129, 0.25)',
-                border: '1px solid #10b981',
-                borderRadius: 8,
-                color: '#34d399',
-                fontSize: 12,
-                fontWeight: 700,
-                cursor: 'pointer'
-              }}
-            >
-              <Camera size={14} />
-              <span>Snap Evidence</span>
-            </button>
-
-            {/* EXIT FULL SCREEN BUTTON */}
             <button
               onClick={handleClose}
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 6,
-                padding: '7px 16px',
-                backgroundColor: '#ef4444',
-                border: '1px solid #dc2626',
+                justifyContent: 'center',
+                width: 36,
+                height: 36,
+                backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                border: '1px solid #ef4444',
                 borderRadius: 8,
-                color: '#ffffff',
-                fontSize: 12.5,
-                fontWeight: 800,
-                cursor: 'pointer',
-                boxShadow: '0 4px 14px rgba(239, 68, 68, 0.4)'
+                color: '#f87171',
+                cursor: 'pointer'
               }}
-              title="Exit Full Screen (Esc)"
+              title="Close Fullscreen (Esc)"
             >
-              <Minimize2 size={15} />
-              <span>Exit Full Screen</span>
+              <X size={18} />
             </button>
           </div>
         </div>
       )}
 
-      {/* 4. INCOMING EVIDENCE ALERT TOAST */}
+      {/* 4. Bottom Directive HUD Bar */}
+      {showHud && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            padding: '16px 24px',
+            background: 'linear-gradient(0deg, rgba(2, 6, 23, 0.95) 0%, rgba(2, 6, 23, 0.6) 75%, transparent 100%)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            zIndex: 100000,
+            backdropFilter: 'blur(10px)',
+            borderTop: '1px solid rgba(255, 255, 255, 0.08)'
+          }}
+        >
+          {/* Directive Input */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, maxWidth: 640 }}>
+            <input
+              type="text"
+              value={directiveInput}
+              onChange={(e) => setDirectiveInput(e.target.value)}
+              placeholder="Type urgent directive to Field Auditor (e.g. 'Zoom in on crack width', 'Hold position')..."
+              style={{
+                flex: 1,
+                padding: '9px 14px',
+                backgroundColor: 'rgba(15, 23, 42, 0.8)',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                borderRadius: 8,
+                color: '#ffffff',
+                fontSize: 12.5,
+                outline: 'none'
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSendDirective(directiveInput);
+              }}
+            />
+            <button
+              onClick={() => handleSendDirective(directiveInput)}
+              className="btn btn-primary btn-sm"
+              style={{ padding: '9px 16px', display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <Send size={13} />
+              <span>Send Directive</span>
+            </button>
+            {directiveStatus && (
+              <span style={{ fontSize: 11, color: '#34d399', fontWeight: 700 }}>
+                {directiveStatus}
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 11, color: '#94a3b8' }}>
+            <span>Press <kbd style={{ background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: 4, color: '#fff' }}>H</kbd> to toggle HUD</span>
+            <span>Press <kbd style={{ background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: 4, color: '#fff' }}>ESC</kbd> to exit</span>
+          </div>
+        </div>
+      )}
+
+      {/* Snapshot Toast */}
       {evidenceAlert && (
         <div
           style={{
             position: 'absolute',
-            top: 86,
-            left: '50%',
-            transform: 'translateX(-50%)',
+            bottom: 80,
+            right: 24,
             backgroundColor: 'rgba(16, 185, 129, 0.95)',
-            backdropFilter: 'blur(12px)',
             border: '1px solid #34d399',
-            borderRadius: 12,
-            padding: '10px 18px',
+            borderRadius: 10,
+            padding: '12px 18px',
             display: 'flex',
             alignItems: 'center',
-            gap: 14,
-            boxShadow: '0 8px 30px rgba(0, 0, 0, 0.5)',
-            zIndex: 101,
-            animation: 'slide-down 0.3s ease'
+            gap: 12,
+            zIndex: 100001,
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.6)'
           }}
         >
           {evidenceAlert.image && (
-            <img
-              src={evidenceAlert.image}
-              alt="Evidence"
-              style={{ width: 44, height: 44, borderRadius: 8, objectFit: 'cover', border: '2px solid #ffffff' }}
+            <img 
+              src={evidenceAlert.image} 
+              alt="Snapshot" 
+              style={{ width: 44, height: 44, borderRadius: 6, objectFit: 'cover', border: '1px solid #fff' }}
             />
           )}
           <div>
             <p style={{ margin: 0, fontSize: 12.5, fontWeight: 800, color: '#ffffff' }}>
               {evidenceAlert.message}
             </p>
-            <p style={{ margin: 0, fontSize: 10.5, color: '#d1fae5' }}>
-              Synced live from Inspector &bull; Stored into Central Evidence Ledger ({evidenceAlert.time})
+            <p style={{ margin: 0, fontSize: 11, color: '#d1fae5' }}>
+              Recorded at {evidenceAlert.time}
             </p>
           </div>
-          <button
-            onClick={() => setEvidenceAlert(null)}
-            style={{ background: 'transparent', border: 'none', color: '#ffffff', cursor: 'pointer', fontWeight: 800, fontSize: 15 }}
-          >
-            ✕
-          </button>
         </div>
-      )}
-
-      {/* 5. FLOATING BOTTOM HUD: DIRECTIVES & TELEMETRY */}
-      {showHud && (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 20,
-            left: 20,
-            right: 20,
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            padding: '12px 20px',
-            backgroundColor: 'rgba(15, 23, 42, 0.88)',
-            backdropFilter: 'blur(16px)',
-            border: '1px solid rgba(255, 255, 255, 0.1)',
-            borderRadius: 14,
-            boxShadow: '0 12px 40px rgba(0, 0, 0, 0.6)',
-            zIndex: 100
-          }}
-        >
-          {/* Quick Directives Dispatched to Field Inspector Phone */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--accent-cyan)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              Admin Directives:
-            </span>
-
-            <button
-              onClick={() => handleSendDirective('Hold camera steady on crack surface')}
-              style={{
-                padding: '6px 12px',
-                backgroundColor: 'rgba(56, 189, 248, 0.12)',
-                border: '1px solid rgba(56, 189, 248, 0.3)',
-                borderRadius: 6,
-                color: '#38bdf8',
-                fontSize: 11,
-                fontWeight: 600,
-                cursor: 'pointer'
-              }}
-            >
-              🎯 Hold Steady
-            </button>
-
-            <button
-              onClick={() => handleSendDirective('Step closer to defect for depth check')}
-              style={{
-                padding: '6px 12px',
-                backgroundColor: 'rgba(245, 158, 11, 0.12)',
-                border: '1px solid rgba(245, 158, 11, 0.3)',
-                borderRadius: 6,
-                color: '#fbbf24',
-                fontSize: 11,
-                fontWeight: 600,
-                cursor: 'pointer'
-              }}
-            >
-              🔍 Step Closer
-            </button>
-
-            <button
-              onClick={() => handleSendDirective('Capture high-res photo for Section 34.4 compliance')}
-              style={{
-                padding: '6px 12px',
-                backgroundColor: 'rgba(239, 68, 68, 0.15)',
-                border: '1px solid rgba(239, 68, 68, 0.4)',
-                borderRadius: 6,
-                color: '#fca5a5',
-                fontSize: 11,
-                fontWeight: 600,
-                cursor: 'pointer'
-              }}
-            >
-              📸 Capture High-Res
-            </button>
-
-            {/* Custom Input */}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleSendDirective(directiveInput);
-              }}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 8 }}
-            >
-              <input
-                type="text"
-                value={directiveInput}
-                onChange={(e) => setDirectiveInput(e.target.value)}
-                placeholder="Type instruction to inspector's screen..."
-                style={{
-                  padding: '6px 12px',
-                  backgroundColor: 'rgba(2, 6, 23, 0.7)',
-                  border: '1px solid rgba(255, 255, 255, 0.15)',
-                  borderRadius: 6,
-                  color: '#ffffff',
-                  fontSize: 11,
-                  width: 240,
-                  outline: 'none'
-                }}
-              />
-              <button
-                type="submit"
-                style={{
-                  padding: '6px 10px',
-                  backgroundColor: 'var(--accent-cyan)',
-                  border: 'none',
-                  borderRadius: 6,
-                  color: '#0f172a',
-                  fontWeight: 800,
-                  fontSize: 11,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 4
-                }}
-              >
-                <Send size={11} />
-                <span>Send</span>
-              </button>
-            </form>
-
-            {directiveStatus && (
-              <span style={{ fontSize: 11, color: '#34d399', fontWeight: 600 }}>
-                ✓ {directiveStatus}
-              </span>
-            )}
-          </div>
-
-          {/* Right Bottom: Telemetry Stats */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16, fontSize: 11.5 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#34d399' }}>
-              <Activity size={14} />
-              <span>{isVideoVisible ? '30.0' : (activeData.fps || 28.4)} FPS</span>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#38bdf8' }}>
-              <Wifi size={14} />
-              <span>{isVideoVisible ? 'P2P 16ms' : 'Cloud 82ms'}</span>
-            </div>
-
-            <button
-              onClick={() => setShowHud(false)}
-              style={{
-                background: 'transparent',
-                border: '1px solid rgba(255, 255, 255, 0.15)',
-                borderRadius: 6,
-                padding: '4px 8px',
-                color: '#94a3b8',
-                fontSize: 10,
-                cursor: 'pointer'
-              }}
-              title="Hide HUD overlay (Press 'H' to toggle)"
-            >
-              Hide HUD (H)
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Floating Toggle HUD button when HUD is hidden */}
-      {!showHud && (
-        <button
-          onClick={() => setShowHud(true)}
-          style={{
-            position: 'absolute',
-            top: 20,
-            right: 20,
-            backgroundColor: 'rgba(15, 23, 42, 0.8)',
-            border: '1px solid rgba(255, 255, 255, 0.2)',
-            borderRadius: 8,
-            padding: '8px 14px',
-            color: '#ffffff',
-            fontSize: 12,
-            fontWeight: 700,
-            cursor: 'pointer',
-            zIndex: 100
-          }}
-        >
-          Show HUD (H)
-        </button>
       )}
     </div>
   );

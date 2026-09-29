@@ -36,6 +36,11 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Static file serving for uploads
 app.use('/uploads', express.static(path.resolve(__dirname, '../uploads')));
 
+// Root route: Redirect or provide instant access to the public web application
+app.get('/', (req, res) => {
+  res.redirect('https://inspectra-pro-2026.surge.sh');
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({

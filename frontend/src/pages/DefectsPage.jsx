@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   X,
   Wrench,
+  UserCheck
 } from 'lucide-react';
 import VoiceDictationButton from '../components/VoiceDictationButton';
 import BeforeAfterComparison from '../components/BeforeAfterComparison';
@@ -29,14 +30,20 @@ const DEFECT_CATEGORIES = [
   'MECHANICAL'
 ];
 
-export default function DefectsPage() {
+export default function DefectsPage({ initialSeverity = 'ALL' }) {
   const toast = useToast();
   const [defects, setDefects] = useState([]);
   const [sites, setSites] = useState([]);
-  const [severityFilter, setSeverityFilter] = useState('ALL');
+  const [severityFilter, setSeverityFilter] = useState(initialSeverity);
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (initialSeverity) {
+      setSeverityFilter(initialSeverity);
+    }
+  }, [initialSeverity]);
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -51,6 +58,17 @@ export default function DefectsPage() {
     reinspected_by: 'Vishnu Prasath',
     remarks: '',
     photo_url: ''
+  });
+
+  // Defect Assignment Modal State
+  const [isAssignOpen, setIsAssignOpen] = useState(false);
+  const [assigningDefect, setAssigningDefect] = useState(null);
+  const [assignForm, setAssignForm] = useState({
+    assigned_to: 'Regional Structural Remediation Team',
+    assigned_inspector_id: 'usr-insp-vp01',
+    priority: 'HIGH',
+    target_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+    instructions: 'Perform immediate physical containment and ultrasonic testing.'
   });
 
   const [formData, setFormData] = useState({
@@ -182,6 +200,36 @@ export default function DefectsPage() {
       fetchDefects();
     } else {
       toast.error('Failed to record reinspection.');
+    }
+  };
+
+  const handleOpenAssign = (defect) => {
+    setAssigningDefect(defect);
+    setAssignForm({
+      assigned_to: defect.assigned_to || 'Regional Structural Remediation Team',
+      assigned_inspector_id: defect.assigned_inspector_id || 'usr-insp-vp01',
+      priority: defect.severity === 'CRITICAL' ? 'CRITICAL' : 'HIGH',
+      target_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+      instructions: `Remediate ${defect.title} at ${defect.site_name || 'site'}.`
+    });
+    setIsAssignOpen(true);
+  };
+
+  const handleSubmitAssign = async (e) => {
+    e.preventDefault();
+    if (!assigningDefect) return;
+
+    try {
+      const res = await api.assignDefect(assigningDefect.id, assignForm);
+      if (res && res.success) {
+        toast.success(`Defect "${assigningDefect.title}" successfully assigned to ${assignForm.assigned_to}`);
+        setIsAssignOpen(false);
+        fetchDefects();
+      } else {
+        toast.error(res?.error || 'Failed to assign defect');
+      }
+    } catch (err) {
+      toast.error('Assignment error: ' + err.message);
     }
   };
 
@@ -395,6 +443,16 @@ export default function DefectsPage() {
                 </div>
 
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => handleOpenAssign(d)}
+                    className="btn btn-secondary btn-sm"
+                    style={{ fontSize: 11, padding: '4px 8px', background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.4)' }}
+                    title="Assign Defect for Corrective Action"
+                  >
+                    <UserCheck size={12} style={{ marginRight: 4 }} />
+                    Assign
+                  </button>
+
                   {d.status !== 'CLOSED' && d.status !== 'RESOLVED' && (
                     <button
                       onClick={() => handleOpenReinspection(d)}
@@ -754,6 +812,104 @@ export default function DefectsPage() {
                 >
                   <CheckCircle2 size={14} />
                   <span>Submit Reinspection Sign-off</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* ASSIGN DEFECT MODAL */}
+      {isAssignOpen && assigningDefect && (
+        <div className="modal-backdrop" onClick={() => setIsAssignOpen(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <UserCheck size={18} color="var(--accent-cyan)" />
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: '#fff' }}>
+                  Assign Defect: {assigningDefect.title}
+                </h3>
+              </div>
+              <button
+                onClick={() => setIsAssignOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitAssign}>
+              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, color: 'var(--text-dim)', marginBottom: 4 }}>
+                    Remediation Team / Engineering Wing
+                  </label>
+                  <input
+                    type="text"
+                    value={assignForm.assigned_to}
+                    onChange={e => setAssignForm(p => ({ ...p, assigned_to: e.target.value }))}
+                    className="input-control"
+                    required
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 12, color: 'var(--text-dim)', marginBottom: 4 }}>
+                      Priority Level
+                    </label>
+                    <select
+                      value={assignForm.priority}
+                      onChange={e => setAssignForm(p => ({ ...p, priority: e.target.value }))}
+                      className="input-control"
+                    >
+                      <option value="CRITICAL">Critical (Immediate Response)</option>
+                      <option value="HIGH">High (24-48 Hours)</option>
+                      <option value="MEDIUM">Medium (7 Days)</option>
+                      <option value="LOW">Low (Routine)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 12, color: 'var(--text-dim)', marginBottom: 4 }}>
+                      Target Completion Date
+                    </label>
+                    <input
+                      type="date"
+                      value={assignForm.target_date}
+                      onChange={e => setAssignForm(p => ({ ...p, target_date: e.target.value }))}
+                      className="input-control"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, color: 'var(--text-dim)', marginBottom: 4 }}>
+                    Corrective Work Instructions
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={assignForm.instructions}
+                    onChange={e => setAssignForm(p => ({ ...p, instructions: e.target.value }))}
+                    className="input-control"
+                  />
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  onClick={() => setIsAssignOpen(false)}
+                  className="btn btn-secondary btn-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary btn-sm"
+                  style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                >
+                  <UserCheck size={14} />
+                  <span>Confirm Assignment</span>
                 </button>
               </div>
             </form>

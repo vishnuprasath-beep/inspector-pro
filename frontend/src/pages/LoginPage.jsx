@@ -22,6 +22,9 @@ import OnboardingModal from '../components/OnboardingModal';
 export default function LoginPage() {
   const { login } = useAuth();
 
+  // Role selection state (Entry flow: Public Root -> Login/Role Selection -> Enter Credentials -> Authenticate)
+  const [selectedRole, setSelectedRole] = useState('INSPECTOR'); // 'INSPECTOR' | 'ADMIN' | 'SUPERVISOR' | 'DIRECTOR'
+
   // Input fields
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -53,14 +56,14 @@ export default function LoginPage() {
 
   const isFormValid = identifier.trim().length > 0 && password.length > 0;
 
-  // Form submit handler with plain-English, supportive error handling
+  // Form submit handler with backend role verification
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError(null);
 
     const cleanId = identifier.trim();
     if (!cleanId || !password) {
-      setError('Please enter your name and password.');
+      setError('Please enter both your Username/ID and Password.');
       return;
     }
 
@@ -70,20 +73,21 @@ export default function LoginPage() {
 
     if (res.success && (res.data || res.user)) {
       const user = res.data?.user || res.user || res.data;
-      const userRole = res.data?.role || user?.role;
+      const userRole = res.role || res.data?.role || user?.role;
 
+      // Backend-authenticated role determines actual portal destination:
+      // Inspector -> /field-inspector
+      // Admin / Supervisor / Director -> /admin-dashboard
       let redirectPath = '/admin-dashboard';
       if (userRole === 'INSPECTOR') {
         redirectPath = '/field-inspector';
-      } else if (userRole === 'DIRECTOR') {
-        redirectPath = '/director-dashboard';
-      } else if (userRole === 'SUPERVISOR') {
-        redirectPath = '/supervisor-dashboard';
+      } else {
+        redirectPath = '/admin-dashboard';
       }
 
       navigateTo(redirectPath);
     } else {
-      setError("Sorry, that name or password isn't correct.");
+      setError(res.error || "Sorry, that username or password is incorrect.");
     }
   };
 
@@ -202,25 +206,130 @@ export default function LoginPage() {
             boxSizing: 'border-box'
           }}
         >
-          {/* Institutional Single Sign-On Assurance Banner */}
-          <div 
-            style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              justifyContent: 'center',
-              gap: 8, 
-              padding: '12px 14px', 
-              backgroundColor: 'var(--color-primary-surface, #E8F5E9)', 
-              borderRadius: 'var(--radius-md, 14px)',
-              marginBottom: 20,
-              fontSize: 13,
-              fontWeight: 600,
-              color: 'var(--color-primary-dark, #1B5E20)',
-              border: '1px solid var(--color-border, #C8E6C9)'
-            }}
-          >
-            <Shield size={16} color="var(--color-primary, #43A047)" />
-            <span>Institutional Login • Role Assigned Automatically</span>
+          {/* Role Selection Section (Required Entry Flow: Public Root -> Select Role -> Enter Credentials -> Authenticate) */}
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--color-text-muted, #555555)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10, textAlign: 'center' }}>
+              Step 1: Select Your Authorized Role
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              {/* 1. Field Inspector */}
+              <button
+                type="button"
+                onClick={() => { setSelectedRole('INSPECTOR'); setError(null); }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '10px 12px',
+                  backgroundColor: selectedRole === 'INSPECTOR' ? 'rgba(2, 132, 199, 0.08)' : 'var(--color-bg, #FFFFFF)',
+                  border: selectedRole === 'INSPECTOR' ? '2px solid #0284c7' : '1px solid var(--color-border, #C8E6C9)',
+                  borderRadius: 10,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: 'var(--color-text, #212121)',
+                  boxShadow: selectedRole === 'INSPECTOR' ? '0 0 0 2px rgba(2, 132, 199, 0.2)' : 'none',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <Smartphone size={18} color="#0284c7" />
+                <div>
+                  <div style={{ fontWeight: 700 }}>Field Inspector</div>
+                  <div style={{ fontSize: 11, color: selectedRole === 'INSPECTOR' ? '#0284c7' : 'var(--color-text-muted, #777)' }}>Mobile Portal</div>
+                </div>
+              </button>
+
+              {/* 2. System Admin */}
+              <button
+                type="button"
+                onClick={() => { setSelectedRole('ADMIN'); setError(null); }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '10px 12px',
+                  backgroundColor: selectedRole === 'ADMIN' ? 'rgba(67, 160, 71, 0.08)' : 'var(--color-bg, #FFFFFF)',
+                  border: selectedRole === 'ADMIN' ? '2px solid var(--color-primary, #43A047)' : '1px solid var(--color-border, #C8E6C9)',
+                  borderRadius: 10,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: 'var(--color-text, #212121)',
+                  boxShadow: selectedRole === 'ADMIN' ? '0 0 0 2px rgba(67, 160, 71, 0.2)' : 'none',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <LayoutDashboard size={18} color="var(--color-primary, #43A047)" />
+                <div>
+                  <div style={{ fontWeight: 700 }}>System Admin</div>
+                  <div style={{ fontSize: 11, color: selectedRole === 'ADMIN' ? 'var(--color-primary-dark, #1B5E20)' : 'var(--color-text-muted, #777)' }}>Command Center</div>
+                </div>
+              </button>
+
+              {/* 3. State Director */}
+              <button
+                type="button"
+                onClick={() => { setSelectedRole('DIRECTOR'); setError(null); }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '10px 12px',
+                  backgroundColor: selectedRole === 'DIRECTOR' ? 'rgba(139, 92, 246, 0.08)' : 'var(--color-bg, #FFFFFF)',
+                  border: selectedRole === 'DIRECTOR' ? '2px solid #8b5cf6' : '1px solid var(--color-border, #C8E6C9)',
+                  borderRadius: 10,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: 'var(--color-text, #212121)',
+                  boxShadow: selectedRole === 'DIRECTOR' ? '0 0 0 2px rgba(139, 92, 246, 0.2)' : 'none',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <Shield size={18} color="#8b5cf6" />
+                <div>
+                  <div style={{ fontWeight: 700 }}>State Director</div>
+                  <div style={{ fontSize: 11, color: selectedRole === 'DIRECTOR' ? '#8b5cf6' : 'var(--color-text-muted, #777)' }}>Executive KPIs</div>
+                </div>
+              </button>
+
+              {/* 4. Supervisor */}
+              <button
+                type="button"
+                onClick={() => { setSelectedRole('SUPERVISOR'); setError(null); }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '10px 12px',
+                  backgroundColor: selectedRole === 'SUPERVISOR' ? 'rgba(245, 158, 11, 0.08)' : 'var(--color-bg, #FFFFFF)',
+                  border: selectedRole === 'SUPERVISOR' ? '2px solid #f59e0b' : '1px solid var(--color-border, #C8E6C9)',
+                  borderRadius: 10,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: 'var(--color-text, #212121)',
+                  boxShadow: selectedRole === 'SUPERVISOR' ? '0 0 0 2px rgba(245, 158, 11, 0.2)' : 'none',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <CheckCircle2 size={18} color="#f59e0b" />
+                <div>
+                  <div style={{ fontWeight: 700 }}>Supervisor</div>
+                  <div style={{ fontSize: 11, color: selectedRole === 'SUPERVISOR' ? '#b45309' : 'var(--color-text-muted, #777)' }}>Sign-off & Verify</div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <div style={{ position: 'relative', textAlign: 'center', margin: '14px 0 16px', borderTop: '1px solid var(--color-border, #E0E0E0)' }}>
+            <span style={{ position: 'absolute', top: -10, left: '50%', transform: 'translateX(-50%)', backgroundColor: 'var(--color-bg, #FFFFFF)', padding: '0 10px', fontSize: 12, fontWeight: 700, color: 'var(--color-text-muted, #777)' }}>
+              Step 2: Enter {selectedRole === 'INSPECTOR' ? 'Inspector' : selectedRole === 'ADMIN' ? 'Admin' : selectedRole === 'DIRECTOR' ? 'Director' : 'Supervisor'} Credentials
+            </span>
           </div>
 
           {/* Supportive Actionable Error Banner */}
@@ -476,10 +585,10 @@ export default function LoginPage() {
             }}
           >
             <span>
-              {selectedRole === 'INSPECTOR' ? 'Example: vishnu.p' : 'Example: admin'}
+              {selectedRole === 'INSPECTOR' ? 'Account: vishnu.p' : selectedRole === 'ADMIN' ? 'Account: admin' : selectedRole === 'DIRECTOR' ? 'Account: director' : 'Account: supervisor'}
             </span>
             <span style={{ fontWeight: 600, color: 'var(--color-primary, #43A047)' }}>
-              {selectedRole === 'INSPECTOR' ? 'Field Portal' : 'Admin Panel'}
+              {selectedRole === 'INSPECTOR' ? 'Field Inspector Portal' : selectedRole === 'ADMIN' ? 'Admin Command Center' : selectedRole === 'DIRECTOR' ? 'Executive KPI Portal' : 'Supervisor Portal'}
             </span>
           </div>
         </div>

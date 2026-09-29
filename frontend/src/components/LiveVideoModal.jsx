@@ -15,7 +15,12 @@ import {
   PhoneCall,
   PhoneOff
 } from 'lucide-react';
-import { connectToInspectorStream, disconnectView, toggleAdminMicrophone } from '../services/liveShareService';
+import { 
+  startViewerSession, 
+  stopViewerSession, 
+  toggleAdminMicrophone, 
+  enableViewerVoiceChat 
+} from '../services/liveShareService';
 import api from '../services/api';
 
 export default function LiveVideoModal({ session, inspector, onClose }) {
@@ -24,9 +29,11 @@ export default function LiveVideoModal({ session, inspector, onClose }) {
   const [errorMsg, setErrorMsg] = useState(null);
   const [voiceState, setVoiceState] = useState('IDLE'); // 'IDLE' | 'REQUESTING' | 'CONNECTED'
   const [isAdminMuted, setIsAdminMuted] = useState(false);
+  const [isIncomingAudioMuted, setIsIncomingAudioMuted] = useState(false);
   const [voiceSession, setVoiceSession] = useState(null);
   const [voiceFeedback, setVoiceFeedback] = useState(null);
   const videoRef = useRef(null);
+  const audioRef = useRef(null);
 
   // Duration counter while stream is connected
   useEffect(() => {
@@ -41,48 +48,60 @@ export default function LiveVideoModal({ session, inspector, onClose }) {
 
   // Establish WebRTC connection to Inspector
   useEffect(() => {
-    if (!session || !session.peer_id) {
-      setErrorMsg('No active WebRTC peer ID found for this session.');
+    if (!session || !session.id) {
+      setErrorMsg('No active session ID found.');
       setConnectionStatus('DISCONNECTED');
       return;
     }
 
-    const adminPeerId = `peer-admin-${Date.now().toString().slice(-4)}`;
+    setConnectionStatus('CONNECTING');
+    setErrorMsg(null);
 
-    async function initCall() {
-      try {
-        setConnectionStatus('CONNECTING');
-        await connectToInspectorStream(
-          adminPeerId,
-          session.peer_id,
-          (remoteStream) => {
-            if (videoRef.current) {
-              videoRef.current.srcObject = remoteStream;
-              videoRef.current.play().catch(e => console.warn('Remote video playback note:', e));
-              setConnectionStatus('CONNECTED');
-            }
-          },
-          (disconnectReason) => {
-            setConnectionStatus('DISCONNECTED');
-            setErrorMsg(disconnectReason || 'Inspector camera connection lost.');
-          }
-        );
-      } catch (err) {
-        console.error('[WebRTC Viewer Connect Error]:', err);
+    startViewerSession({
+      sessionId: session.id,
+      role: 'ADMIN',
+      onRemoteStream: (remoteStream, newTrack) => {
+        if (videoRef.current && videoRef.current.srcObject !== remoteStream) {
+          videoRef.current.srcObject = remoteStream;
+          videoRef.current.play().catch(e => console.warn('Remote video playback note:', e));
+        }
+        if (audioRef.current && audioRef.current.srcObject !== remoteStream) {
+          audioRef.current.srcObject = remoteStream;
+          audioRef.current.play().catch(e => console.warn('Remote audio playback note:', e));
+        }
+        const hasLiveVideo = remoteStream.getVideoTracks().some(t => t.readyState === 'live');
+        const hasLiveAudio = remoteStream.getAudioTracks().some(t => t.readyState === 'live');
+        if (hasLiveVideo || hasLiveAudio) {
+          setConnectionStatus('CONNECTED');
+        }
+      },
+      onStateChange: ({ connectionState, hasVideo, hasAudio }) => {
+        if (connectionState === 'connected' && (hasVideo || hasAudio)) {
+          setConnectionStatus('CONNECTED');
+        } else if (connectionState === 'failed' || connectionState === 'closed') {
+          setConnectionStatus('DISCONNECTED');
+        }
+      },
+      onDisconnected: (disconnectReason) => {
         setConnectionStatus('DISCONNECTED');
-        setErrorMsg(err.message || 'Inspector camera connection could not be established.');
+        setErrorMsg(disconnectReason || 'Inspector camera connection lost.');
       }
-    }
-
-    initCall();
+    }).catch(err => {
+      console.error('[WebRTC Viewer Connect Error]:', err);
+      setConnectionStatus('DISCONNECTED');
+      setErrorMsg(err.message || 'Inspector camera connection could not be established.');
+    });
 
     return () => {
-      disconnectView();
+      stopViewerSession();
       if (videoRef.current) {
         videoRef.current.srcObject = null;
       }
+      if (audioRef.current) {
+        audioRef.current.srcObject = null;
+      }
     };
-  }, [session]);
+  }, [session?.id]);
 
   // Poll voice session status while in REQUESTING state
   useEffect(() => {
@@ -93,6 +112,9 @@ export default function LiveVideoModal({ session, inspector, onClose }) {
           const res = await api.getVoiceSession(session.id);
           if (res.success && res.data) {
             if (res.data.status === 'CONNECTED') {
+              try {
+                await enableViewerVoiceChat();
+              } catch (e) {}
               toggleAdminMicrophone(true);
               setIsAdminMuted(false);
               setVoiceState('CONNECTED');
@@ -116,7 +138,7 @@ export default function LiveVideoModal({ session, inspector, onClose }) {
     setVoiceFeedback(null);
     setVoiceState('REQUESTING');
     try {
-      const res = await api.requestVoiceChat(session.id);
+      const res = await api.requestVoiceChat(session.id, session.inspector_id);
       if (res.success && res.data) {
         setVoiceSession(res.data);
       } else {
@@ -142,8 +164,11 @@ export default function LiveVideoModal({ session, inspector, onClose }) {
   };
 
   // Toggle Admin Microphone
-  const handleToggleAdminMic = () => {
+  const handleToggleAdminMic = async () => {
     const newMuteState = !isAdminMuted;
+    if (!newMuteState) {
+      try { await enableViewerVoiceChat(); } catch (e) {}
+    }
     toggleAdminMicrophone(!newMuteState);
     setIsAdminMuted(newMuteState);
   };
@@ -280,6 +305,7 @@ export default function LiveVideoModal({ session, inspector, onClose }) {
             ref={videoRef}
             autoPlay 
             playsInline 
+            muted
             controls={false}
             style={{
               width: '100%',
@@ -288,13 +314,46 @@ export default function LiveVideoModal({ session, inspector, onClose }) {
               display: connectionStatus === 'CONNECTED' ? 'block' : 'none'
             }}
           />
+          <audio ref={audioRef} autoPlay playsInline style={{ display: 'none' }} />
+
+          {/* Audio Unmute/Mute Toggle on Video */}
+          {connectionStatus === 'CONNECTED' && (
+            <button
+              onClick={() => {
+                if (audioRef.current) {
+                  audioRef.current.muted = !audioRef.current.muted;
+                  setIsIncomingAudioMuted(audioRef.current.muted);
+                }
+              }}
+              style={{
+                position: 'absolute',
+                top: 14,
+                right: 14,
+                zIndex: 10,
+                background: 'rgba(15, 23, 42, 0.85)',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                color: isIncomingAudioMuted ? '#F87171' : '#34D399',
+                borderRadius: 8,
+                padding: '6px 12px',
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6
+              }}
+            >
+              {isIncomingAudioMuted ? <MicOff size={14} /> : <Mic size={14} />}
+              <span>{isIncomingAudioMuted ? 'Unmute Audio' : 'Audio Active'}</span>
+            </button>
+          )}
 
           {/* Connecting HUD */}
           {connectionStatus === 'CONNECTING' && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, color: '#94A3B8' }}>
               <div style={{ width: 44, height: 44, border: '3px solid #334155', borderTopColor: '#38BDF8', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
               <span style={{ fontSize: 14, fontWeight: 600 }}>Establishing secure WebRTC peer connection...</span>
-              <span style={{ fontSize: 12, color: '#64748B' }}>Requesting direct video feed from inspector's device</span>
+              <span style={{ fontSize: 12, color: '#64748B' }}>Exchanging WebRTC offer/answer via STUN/TURN relays</span>
             </div>
           )}
 

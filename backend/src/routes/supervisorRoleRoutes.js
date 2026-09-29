@@ -5,9 +5,9 @@ const authorizeRoles = require('../middleware/roleMiddleware');
 const db = require('../config/db');
 const { TABLES, ROLES } = require('../models/schema');
 
-// Strict SUPERVISOR-only barrier
+// SUPERVISOR and ADMIN barrier
 router.use(authenticateJWT);
-router.use(authorizeRoles(ROLES.SUPERVISOR));
+router.use(authorizeRoles(ROLES.SUPERVISOR, ROLES.ADMIN));
 
 /**
  * GET /api/supervisor/operations-summary

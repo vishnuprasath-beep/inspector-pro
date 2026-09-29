@@ -19,11 +19,12 @@ import {
 } from 'lucide-react';
 import { 
   captureCameraStream, 
+  captureMicrophoneStream, 
   captureScreenStream, 
-  toggleLocalMicrophone,
+  toggleLocalMicrophone, 
   stopLocalStream, 
-  initializePeer,
-  listenForIncomingCall 
+  startBroadcasterSession,
+  getActiveBroadcasterSession
 } from '../services/liveShareService';
 import api from '../services/api';
 
@@ -31,13 +32,13 @@ const InspectorLiveShareCard = React.forwardRef(function InspectorLiveShareCard(
   { inspector, onSessionChange, hasPendingRequest, incomingVoiceRequest, onVoiceSessionChange }, 
   ref
 ) {
-  const [sharingStatus, setSharingStatus] = useState('NOT SHARING'); // 'NOT SHARING' | 'CAMERA SHARING' | 'SCREEN SHARING'
+  const [sharingStatus, setSharingStatus] = useState('NOT SHARING'); // 'NOT SHARING' | 'CAMERA SHARING' | 'SCREEN SHARING' | 'VOICE ACTIVE'
   const [activeSession, setActiveSession] = useState(null);
   const [localStream, setLocalStream] = useState(null);
   const [durationSeconds, setDurationSeconds] = useState(0);
   const [errorMsg, setErrorMsg] = useState(null);
   const [starting, setStarting] = useState(false);
-  const [viewerInfo, setViewerInfo] = useState('Admin (Remote Support)');
+  const [viewerInfo, setViewerInfo] = useState('Admin / Management');
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [voiceSession, setVoiceSession] = useState(null); // { id, status: 'REQUESTED' | 'CONNECTED' }
   const videoRef = useRef(null);
@@ -50,6 +51,22 @@ const InspectorLiveShareCard = React.forwardRef(function InspectorLiveShareCard(
     isSharing: sharingStatus !== 'NOT SHARING',
     status: sharingStatus
   }));
+
+  // Synchronize state with active broadcaster session on mount
+  useEffect(() => {
+    const activeBroadcaster = getActiveBroadcasterSession();
+    if (activeBroadcaster && activeBroadcaster.stream) {
+      const stream = activeBroadcaster.stream;
+      setLocalStream(stream);
+      setActiveSession(activeBroadcaster.session || { id: activeBroadcaster.sessionId });
+      const hasVideo = stream.getVideoTracks().some(t => t.readyState === 'live');
+      setSharingStatus(hasVideo ? 'CAMERA SHARING' : 'VOICE ACTIVE');
+      if (videoRef.current && videoRef.current.srcObject !== stream) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {});
+      }
+    }
+  }, []);
 
   // Attach local media stream to video preview whenever stream or status changes
   useEffect(() => {
@@ -95,6 +112,10 @@ const InspectorLiveShareCard = React.forwardRef(function InspectorLiveShareCard(
 
   // Start Camera Sharing with both camera and microphone enabled
   const handleStartCamera = async () => {
+    if (sharingStatus !== 'NOT SHARING' || getActiveBroadcasterSession()) {
+      console.log('[Inspector Card] Broadcaster is already active. Suppressing duplicate start.');
+      return;
+    }
     setErrorMsg(null);
     setStarting(true);
     try {
@@ -102,7 +123,6 @@ const InspectorLiveShareCard = React.forwardRef(function InspectorLiveShareCard(
       setLocalStream(stream);
 
       const peerId = `peer-insp-${inspector?.id || 'vp01'}-${Date.now().toString().slice(-4)}`;
-      const peer = await initializePeer(peerId);
 
       // Register session with backend
       const res = await api.startLiveShareSession('CAMERA', peerId);
@@ -110,11 +130,17 @@ const InspectorLiveShareCard = React.forwardRef(function InspectorLiveShareCard(
       setActiveSession(session);
       setSharingStatus('CAMERA SHARING');
 
-      // Listen for WebRTC call from Admin
-      listenForIncomingCall(peer, stream, () => {
-        // Connected to Admin viewer
-      }, () => {
-        // Disconnected
+      // Start native WebRTC Broadcaster
+      await startBroadcasterSession({
+        sessionId: session.id,
+        stream,
+        session,
+        onStateChange: (connState, iceState) => {
+          console.log(`[Inspector Card] WebRTC state: ${connState}, ice: ${iceState}`);
+        },
+        onRemoteAudio: (audioStream) => {
+          console.log('[Inspector Card] Received remote audio stream from Management');
+        }
       });
 
       if (onSessionChange) onSessionChange(session);
@@ -131,6 +157,10 @@ const InspectorLiveShareCard = React.forwardRef(function InspectorLiveShareCard(
 
   // Start Screen Sharing
   const handleStartScreen = async () => {
+    if (sharingStatus !== 'NOT SHARING' || getActiveBroadcasterSession()) {
+      console.log('[Inspector Card] Broadcaster is already active. Suppressing duplicate start.');
+      return;
+    }
     setErrorMsg(null);
     setStarting(true);
     try {
@@ -138,7 +168,6 @@ const InspectorLiveShareCard = React.forwardRef(function InspectorLiveShareCard(
       setLocalStream(stream);
 
       const peerId = `peer-screen-${inspector?.id || 'vp01'}-${Date.now().toString().slice(-4)}`;
-      const peer = await initializePeer(peerId);
 
       // Register session with backend
       const res = await api.startLiveShareSession('SCREEN', peerId);
@@ -146,14 +175,22 @@ const InspectorLiveShareCard = React.forwardRef(function InspectorLiveShareCard(
       setActiveSession(session);
       setSharingStatus('SCREEN SHARING');
 
-      // Listen for native stop
+      // Listen for native browser stop
       if (stream.getVideoTracks()[0]) {
         stream.getVideoTracks()[0].onended = () => {
           handleStopSharing();
         };
       }
 
-      listenForIncomingCall(peer, stream);
+      // Start native WebRTC Broadcaster
+      await startBroadcasterSession({
+        sessionId: session.id,
+        stream,
+        session,
+        onStateChange: (connState, iceState) => {
+          console.log(`[Inspector Card Screen] WebRTC state: ${connState}, ice: ${iceState}`);
+        }
+      });
 
       if (onSessionChange) onSessionChange(session);
     } catch (err) {
@@ -167,17 +204,40 @@ const InspectorLiveShareCard = React.forwardRef(function InspectorLiveShareCard(
     }
   };
 
-  // Accept incoming voice chat
+  // Accept incoming voice chat (supports Camera + Voice OR Voice Only)
   const handleAcceptVoice = async () => {
     if (!voiceSession) return;
     try {
-      await api.respondVoiceChat(voiceSession.id, 'ACCEPTED', activeSession?.id);
-      toggleLocalMicrophone(true);
+      const sessionId = voiceSession.live_share_session_id || activeSession?.id;
+      await api.respondVoiceChat(voiceSession.id, 'ACCEPTED', sessionId);
+      
+      // If no media stream is currently broadcasting (Voice Only mode)
+      if (sharingStatus === 'NOT SHARING' || !localStream) {
+        const micStream = await captureMicrophoneStream();
+        setLocalStream(micStream);
+        setSharingStatus('VOICE ACTIVE');
+        
+        await startBroadcasterSession({
+          sessionId,
+          stream: micStream,
+          onStateChange: (connState, iceState) => {
+            console.log(`[Inspector Card Voice] WebRTC state: ${connState}, ice: ${iceState}`);
+          },
+          onRemoteAudio: (audioStream) => {
+            console.log('[Inspector Card Voice] Remote audio received');
+          }
+        });
+      } else {
+        // Camera already active; enable/unmute microphone track
+        toggleLocalMicrophone(true);
+      }
+
       setIsMicMuted(false);
       setVoiceSession(prev => ({ ...prev, status: 'CONNECTED' }));
       if (onVoiceSessionChange) onVoiceSessionChange({ ...voiceSession, status: 'CONNECTED' });
     } catch (e) {
       console.error('Failed to accept voice chat:', e);
+      setErrorMsg('Microphone access denied or error starting voice chat: ' + e.message);
     }
   };
 

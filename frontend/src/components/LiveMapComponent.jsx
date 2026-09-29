@@ -52,21 +52,12 @@ export default function LiveMapComponent({
     });
     mapInstanceRef.current = map;
 
-    // High-Availability Production Tile Layer (CARTO Dark Matter CDN + OSM fallback)
-    const primaryTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      subdomains: 'abcd',
+    // OpenStreetMap Standard Tile Layer
+    const primaryTiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     });
     primaryTiles.addTo(map);
-
-    primaryTiles.on('tileerror', function() {
-      console.warn('[Map CDN] Primary tile server issue, falling back to OSM standard');
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; OpenStreetMap contributors'
-      }).addTo(map);
-    });
 
     // Custom Icon Creators
     const siteIcon = L.divIcon({

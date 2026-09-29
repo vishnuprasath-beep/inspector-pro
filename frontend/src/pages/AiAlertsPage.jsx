@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import ReinspectionExecutionModal from '../components/ReinspectionExecutionModal';
 
-export default function AiAlertsPage() {
+export default function AiAlertsPage({ onNavigate }) {
   const [alerts, setAlerts] = useState([]);
   const [filterSource, setFilterSource] = useState('ALL'); // 'ALL' | 'cctv' | 'inspector'
   const [filterStatus, setFilterStatus] = useState('ALL'); // 'ALL' | 'OPEN' | 'REVIEWED' | 'RESOLVED'
@@ -103,11 +103,11 @@ export default function AiAlertsPage() {
               <Sparkles size={20} color="#43A047" />
             </div>
             <div>
-              <h1 style={{ fontSize: 22, fontWeight: 900, color: '#0F172A', margin: 0 }}>
-                AI Alerts & Detection Ledger
+              <h1 style={{ fontSize: 22, fontWeight: 900, color: 'var(--text-heading, #0F172A)', margin: 0 }}>
+                AI Findings & Detection Ledger
               </h1>
-              <p style={{ fontSize: 13, color: '#64748B', margin: '2px 0 0' }}>
-                Autonomous detections from CCTV edge nodes and Field Inspector cameras
+              <p style={{ fontSize: 13, color: 'var(--text-muted, #64748B)', margin: '2px 0 0' }}>
+                Autonomous YOLO detections from CCTV edge nodes, Field Inspector cameras, and AI Inspection Studio
               </p>
             </div>
           </div>

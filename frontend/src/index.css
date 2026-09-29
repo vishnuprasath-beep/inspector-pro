@@ -861,8 +861,519 @@ table.data-table tr:hover td {
 }
 
 [data-theme="light"] .nav-item.active {
-  color: #0284c7 !important;
-  background: #e0f2fe !important;
-  border-color: #38bdf8 !important;
+  color: #15803d !important;
+  background: #f0fdf4 !important;
+  border-color: #86efac !important;
 }
+
+/* ==========================================================================
+   INSPECTRA PRO - ENTERPRISE DASHBOARD REDESIGN STYLES
+   Controlled Color Palette, Expandable Sidebar, KPI Cards & Responsive Design
+   ========================================================================== */
+
+/* 1. Controlled Semantic Color System Badges */
+.badge-green {
+  background: rgba(22, 163, 74, 0.12);
+  color: #16a34a;
+  border: 1px solid rgba(22, 163, 74, 0.28);
+}
+[data-theme="light"] .badge-green {
+  background: #f0fdf4;
+  color: #15803d;
+  border-color: #bbf7d0;
+}
+
+.badge-blue {
+  background: rgba(2, 132, 199, 0.12);
+  color: #0284c7;
+  border: 1px solid rgba(2, 132, 199, 0.28);
+}
+[data-theme="light"] .badge-blue {
+  background: #f0f9ff;
+  color: #0369a1;
+  border-color: #bae6fd;
+}
+
+.badge-purple {
+  background: rgba(124, 58, 237, 0.12);
+  color: #a855f7;
+  border: 1px solid rgba(124, 58, 237, 0.28);
+}
+[data-theme="light"] .badge-purple {
+  background: #f5f3ff;
+  color: #6d28d9;
+  border-color: #ddd6fe;
+}
+
+.badge-amber {
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.28);
+}
+[data-theme="light"] .badge-amber {
+  background: #fffbeb;
+  color: #b45309;
+  border-color: #fde68a;
+}
+
+.badge-red {
+  background: rgba(220, 38, 38, 0.12);
+  color: #ef4444;
+  border: 1px solid rgba(220, 38, 38, 0.28);
+}
+[data-theme="light"] .badge-red {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+/* 2. Expandable Sidebar Styles */
+.sidebar-group {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 2px;
+}
+
+.sidebar-group-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #94a3b8);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.sidebar-group-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-main, #ffffff);
+}
+[data-theme="light"] .sidebar-group-btn:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.sidebar-group-btn.group-active {
+  color: #16a34a;
+}
+[data-theme="light"] .sidebar-group-btn.group-active {
+  color: #15803d;
+}
+
+.sidebar-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 28px;
+  padding-right: 4px;
+  margin-top: 2px;
+  margin-bottom: 4px;
+  position: relative;
+  overflow: hidden;
+  transition: max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+}
+
+.sidebar-subnav::before {
+  content: '';
+  position: absolute;
+  left: 17px;
+  top: 4px;
+  bottom: 4px;
+  width: 1.5px;
+  background: var(--border-subtle, rgba(255, 255, 255, 0.08));
+}
+[data-theme="light"] .sidebar-subnav::before {
+  background: #e2e8f0;
+}
+
+.sidebar-subitem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-dim, #94a3b8);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.sidebar-subitem:hover {
+  color: var(--text-main, #ffffff);
+  background: rgba(255, 255, 255, 0.04);
+}
+[data-theme="light"] .sidebar-subitem:hover {
+  color: #0f172a;
+  background: #f1f5f9;
+}
+
+.sidebar-subitem.sub-active {
+  color: #22c55e !important;
+  background: rgba(34, 197, 94, 0.12) !important;
+  font-weight: 700;
+}
+[data-theme="light"] .sidebar-subitem.sub-active {
+  color: #15803d !important;
+  background: #f0fdf4 !important;
+}
+
+.nav-item.active {
+  color: #22c55e !important;
+  background: rgba(34, 197, 94, 0.12) !important;
+  border-left: 3px solid #22c55e !important;
+  border-radius: 0 8px 8px 0;
+  font-weight: 700;
+}
+[data-theme="light"] .nav-item.active {
+  color: #15803d !important;
+  background: #f0fdf4 !important;
+  border-left: 3px solid #16a34a !important;
+}
+
+/* 3. Dashboard KPI Command Center Cards */
+.kpi-card {
+  background: var(--bg-card, #0f172a);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: 14px;
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+[data-theme="light"] .kpi-card {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.kpi-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.kpi-icon-wrap {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kpi-number {
+  font-size: 32px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--text-heading, #ffffff);
+}
+[data-theme="light"] .kpi-number {
+  color: #0f172a;
+}
+
+.kpi-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted, #94a3b8);
+  text-transform: capitalize;
+}
+
+/* 4. Quick Action Button Cards */
+.quick-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  background: var(--bg-card, rgba(15, 23, 42, 0.7));
+  color: var(--text-heading, #ffffff);
+  transition: all 0.18s ease;
+  text-decoration: none;
+}
+[data-theme="light"] .quick-action-btn {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  color: #1e293b;
+}
+
+.quick-action-btn:hover {
+  transform: translateY(-1px);
+  border-color: #16a34a;
+  box-shadow: 0 4px 12px rgba(22, 163, 74, 0.15);
+}
+
+/* 5. Mobile Drawer Navigation */
+@media (max-width: 900px) {
+  .sidebar {
+    position: fixed;
+    left: -280px;
+    top: 0;
+    bottom: 0;
+    width: 270px;
+    z-index: 100;
+    transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+  }
+  .sidebar.drawer-open {
+    left: 0;
+  }
+  .sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    z-index: 99;
+  }
+  .page-body {
+    padding: 16px 16px 40px !important;
+  }
+  .mobile-menu-btn {
+    display: flex !important;
+  }
+}
+
+/* 6. Responsive Table to Card Transformation */
+.desktop-table-view {
+  display: block;
+}
+.mobile-cards-view {
+  display: none !important;
+}
+
+@media (max-width: 768px) {
+  .desktop-table-view {
+    display: none !important;
+  }
+  .mobile-cards-view {
+    display: flex !important;
+  }
+}
+
+/* ========================================================= */
+/* 7. INSPECTOR PORTAL MODERN DESIGN SYSTEM                  */
+/* ========================================================= */
+
+.inspector-app-layout {
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+  background-color: var(--bg-primary);
+  color: var(--text-main);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Desktop Sidebar for Inspector Portal */
+.inspector-sidebar {
+  width: 250px;
+  min-width: 250px;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  z-index: 40;
+  transition: all 0.2s ease;
+}
+
+.inspector-sidebar-logo {
+  padding: 18px 16px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.inspector-nav {
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.inspector-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.inspector-nav-item:hover {
+  background: rgba(16, 185, 129, 0.06);
+  color: var(--text-heading);
+}
+
+.inspector-nav-item.active {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+  font-weight: 700;
+}
+
+/* Inspector Main Content Area */
+.inspector-main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 100vh;
+  position: relative;
+}
+
+.inspector-top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--header-bg);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.inspector-content-viewport {
+  flex: 1;
+  padding: 24px 28px 60px;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* KPI Grid */
+.inspector-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+/* Next Inspection Hero Card */
+.inspector-hero-card {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(56, 189, 248, 0.04) 100%);
+  border: 1.5px solid rgba(16, 185, 129, 0.3);
+  border-radius: 16px;
+  padding: 20px;
+  margin-bottom: 20px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(16, 185, 129, 0.06);
+}
+
+/* Mobile Bottom Navigation */
+.inspector-bottom-bar {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--header-bg);
+  backdrop-filter: blur(20px);
+  border-top: 1px solid var(--border-subtle);
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+  z-index: 50;
+  justify-content: space-around;
+  align-items: center;
+}
+
+.inspector-bottom-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.inspector-bottom-btn.active {
+  color: #10b981;
+  font-weight: 800;
+}
+
+/* Mobile Drawer */
+.inspector-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  z-index: 60;
+}
+
+.inspector-drawer-sheet {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 20px 20px 0 0;
+  padding: 20px 18px calc(24px + env(safe-area-inset-bottom, 0px));
+  z-index: 61;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.25);
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+/* Responsive Overrides */
+@media (max-width: 900px) {
+  .inspector-sidebar {
+    display: none !important;
+  }
+  .inspector-bottom-bar {
+    display: flex !important;
+  }
+  .inspector-top-bar {
+    padding: 10px 16px !important;
+  }
+  .inspector-content-viewport {
+    padding: 14px 14px 80px !important;
+  }
+  .inspector-kpi-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 10px !important;
+  }
+}
+
+
 

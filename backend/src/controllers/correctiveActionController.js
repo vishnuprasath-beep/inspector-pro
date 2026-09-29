@@ -38,7 +38,12 @@ async function getAllCorrectiveActions(req, res) {
  */
 async function createCorrectiveAction(req, res) {
   try {
-    const { defect_id, assigned_to_user_id, action_taken, action_type, estimated_cost, notes } = req.body;
+    const defect_id = req.body.defect_id;
+    const action_taken = req.body.action_taken || req.body.directive_title;
+    const assigned_to_user_id = req.body.assigned_to_user_id || req.body.assigned_supervisor_id || 'usr-insp-vp01';
+    const action_type = req.body.action_type || 'REPAIR';
+    const estimated_cost = req.body.estimated_cost;
+    const notes = req.body.notes || req.body.instructions || '';
 
     if (!defect_id || !action_taken) {
       return res.status(400).json({ success: false, error: 'Defect ID and action taken are required.' });

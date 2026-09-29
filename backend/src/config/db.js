@@ -45,7 +45,8 @@ const initialSchema = {
   ai_model_versions: [],
   verified_ai_samples: [],
   offline_sync_records: [],
-  qr_codes: []
+  qr_codes: [],
+  live_share_signals: []
 };
 
 class Database {

@@ -48,24 +48,7 @@ async function login(req, res) {
       });
     }
 
-    let isMatch = bcrypt.compareSync(password, user.password_hash);
-    if (!isMatch) {
-      // Check secondary valid official passwords
-      const secondaryPasswords = {
-        'usr-admin-01': ['Admin@Selva2026', 'Admin@2026'],
-        'usr-director-01': ['Director@Radha2026', 'Director@2026'],
-        'usr-supervisor-01': ['Super@Muthu2026', 'Super@2026'],
-        'usr-insp-vp01': ['Insp@VishnuP2026', 'Field@2026'],
-        'usr-insp-vv02': ['Insp@VishnuV2026', 'Field@2026'],
-        'usr-insp-sv03': ['Insp@Siva2026', 'Field@2026'],
-        'usr-insp-sr04': ['Insp@Sriram2026', 'Field@2026'],
-        'usr-insp-ml05': ['Insp@Maha2026', 'Field@2026'],
-        'usr-insp-sm06': ['Insp@Sivamathi2026', 'Field@2026']
-      };
-      if (secondaryPasswords[user.id] && secondaryPasswords[user.id].includes(password)) {
-        isMatch = true;
-      }
-    }
+    const isMatch = typeof user.password_hash === 'string' && bcrypt.compareSync(password, user.password_hash);
 
     if (!isMatch) {
       return res.status(401).json({
@@ -181,73 +164,12 @@ async function getProfile(req, res) {
  * Register New User (Admin or Self)
  */
 async function register(req, res) {
-  try {
-    const { name, email, password, role = ROLES.INSPECTOR, phone, specialization, employee_code } = req.body;
-
-    if (!name || !email || !password) {
-      return res.status(400).json({ success: false, error: 'Name, email, and password are required.' });
-    }
-
-    const existing = db.findOne(TABLES.USERS, { email: email.toLowerCase().trim() });
-    if (existing) {
-      return res.status(409).json({ success: false, error: 'User with this email already exists.' });
-    }
-
-    const newUser = {
-      id: `usr-${uuidv4()}`,
-      name,
-      email: email.toLowerCase().trim(),
-      password_hash: bcrypt.hashSync(password, 10),
-      role: role.toUpperCase(),
-      phone: phone || '',
-      avatar_url: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
-      status: 'ACTIVE'
-    };
-
-    db.insert(TABLES.USERS, newUser);
-
-    let inspectorRecord = null;
-    if (newUser.role === ROLES.INSPECTOR) {
-      inspectorRecord = {
-        id: `insp-${uuidv4()}`,
-        user_id: newUser.id,
-        employee_code: employee_code || `INSP-${Math.floor(1000 + Math.random() * 9000)}`,
-        specialization: specialization || 'General Infrastructure Inspection',
-        current_lat: null,
-        current_lng: null,
-        last_active_at: new Date().toISOString(),
-        assigned_sites_count: 0,
-        status: 'AVAILABLE'
-      };
-      db.insert(TABLES.INSPECTORS, inspectorRecord);
-    }
-
-    const token = generateToken({
-      id: newUser.id,
-      email: newUser.email,
-      role: newUser.role,
-      name: newUser.name
-    });
-
-    logAuditAction(newUser.id, 'USER_REGISTERED', 'USER', newUser.id, { role: newUser.role }, req);
-
-    res.status(201).json({
-      success: true,
-      message: 'User registered successfully.',
-      data: {
-        token,
-        user: {
-          id: newUser.id,
-          name: newUser.name,
-          email: newUser.email,
-          role: newUser.role
-        },
-        inspectorRecord
-      }
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  // Disabled as part of Phase 1 Security Remediation: Prevent anonymous role escalation.
+  // Account provisioning is restricted to administrators via the /api/users endpoint.
+  return res.status(410).json({ 
+    success: false, 
+    error: 'Public registration is disabled. Please contact your administrator for an account invitation.' 
+  });
 }
 
 module.exports = {

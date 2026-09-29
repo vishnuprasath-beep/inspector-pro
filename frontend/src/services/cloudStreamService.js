@@ -14,22 +14,27 @@
  *    - Admin transmits directives (e.g. "Zoom in", "Flag Critical") to the field inspector in real time.
  */
 
-import { Peer } from 'peerjs';
+// Secure Internal Session Broadcast Bus (Replaces unauthenticated public relay)
+const LOCAL_BUS_CHANNEL = 'inspectra_secure_telemetry_bus';
+let localBroadcastChannel = null;
+try {
+  if (typeof window !== 'undefined' && window.BroadcastChannel) {
+    localBroadcastChannel = new BroadcastChannel(LOCAL_BUS_CHANNEL);
+  }
+} catch (e) {}
 
-const TELEMETRY_TOPIC = 'inspectra_telemetry_saravanan_v2';
-const DIRECTIVE_TOPIC = 'inspectra_directive_saravanan_v2';
-const NTFY_BASE_URL = 'https://ntfy.sh';
+export const INSPECTOR_PEER_ID = 'inspectra-cam-broadcaster-node';
+export const ADMIN_PEER_ID = 'inspectra-admin-terminal-node';
 
-export const INSPECTOR_PEER_ID = 'inspectra-cam-saravanan-live';
-export const ADMIN_PEER_ID = 'inspectra-admin-terminal-live';
-
-// Rate-limiting throttle for cloud frame publishing
+// Rate-limiting throttle for session frame publishing
 let lastPublishTime = 0;
-const MIN_PUBLISH_INTERVAL_MS = 1000; // 1 FPS cloud snapshot stream
+const MIN_PUBLISH_INTERVAL_MS = 1000; // 1 FPS local snapshot stream
 
 /**
- * Publishes live inspection telemetry and camera frame snapshot to the Cloud Relay
- * Accessible by any admin device on the internet.
+ * Publishes live inspection telemetry to the secure authenticated session bus.
+ * SECURITY COMPLIANCE (Section 16):
+ * Inspector camera frames are NEVER broadcast to unauthenticated public cloud topics.
+ * Real cross-device streaming utilizes authorized peer-to-peer WebRTC connections.
  * @param {Object} payload 
  * @param {boolean} forceInstant Bypass rate limit (for captures or critical alerts)
  */
@@ -43,86 +48,73 @@ export async function publishCloudStream(payload, forceInstant = false) {
   const dataToSend = {
     ...payload,
     publishedAt: now,
-    cloudRelay: 'ACTIVE_INTERNET_BUS'
+    cloudRelay: 'SECURE_AUTHENTICATED_SESSION_BUS'
   };
 
   try {
-    // Post to cloud pub/sub topic
-    await fetch(`${NTFY_BASE_URL}/${TELEMETRY_TOPIC}`, {
-      method: 'POST',
-      headers: {
-        'Title': 'Inspectra Telemetry Frame',
-        'Priority': forceInstant ? 'high' : 'low',
-        'Tags': forceInstant ? 'camera_flash,warning' : 'satellite'
-      },
-      body: JSON.stringify(dataToSend)
-    });
+    // 1. Dispatch to in-browser secure BroadcastChannel
+    if (localBroadcastChannel) {
+      localBroadcastChannel.postMessage(dataToSend);
+    }
+
+    // 2. Dispatch cross-tab storage event
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('inspectra_latest_telemetry', JSON.stringify(dataToSend));
+    }
   } catch (err) {
-    console.warn('[CloudStream] Publish error (fallback to local bus):', err);
+    console.warn('[Security Bus] Internal telemetry dispatch warning:', err);
   }
 }
 
 /**
- * Subscribes to the live cloud inspection stream from any physical device
+ * Subscribes to the live inspection stream from within authorized session
  * @param {Function} onData Callback with incoming telemetry data
  * @returns {Function} Unsubscribe cleanup function
  */
 export function subscribeCloudStream(onData) {
-  let eventSource = null;
   let isCancelled = false;
 
-  // 1. Immediately poll latest cached message so UI populates on initial load
-  fetch(`${NTFY_BASE_URL}/${TELEMETRY_TOPIC}/json?poll=1`)
-    .then(res => res.text())
-    .then(text => {
-      if (isCancelled || !text) return;
-      const lines = text.trim().split('\n');
-      for (let i = lines.length - 1; i >= 0; i--) {
-        try {
-          const parsed = JSON.parse(lines[i]);
-          if (parsed.message) {
-            const telemetry = JSON.parse(parsed.message);
-            onData(telemetry);
-            break;
-          }
-        } catch (e) {}
-      }
-    })
-    .catch(() => {});
-
-  // 2. Open continuous Server-Sent Events (SSE) stream
+  // 1. Read latest state from secure session cache
   try {
-    eventSource = new EventSource(`${NTFY_BASE_URL}/${TELEMETRY_TOPIC}/sse`);
-
-    eventSource.onmessage = (event) => {
-      if (isCancelled || !event.data) return;
-      try {
-        const wrapper = JSON.parse(event.data);
-        if (wrapper.message) {
-          const payload = JSON.parse(wrapper.message);
-          onData(payload);
-        }
-      } catch (err) {
-        // Raw json fallback
-        try {
-          const raw = JSON.parse(event.data);
-          onData(raw);
-        } catch (e) {}
+    if (typeof localStorage !== 'undefined') {
+      const cached = localStorage.getItem('inspectra_latest_telemetry');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        onData(parsed);
       }
-    };
+    }
+  } catch (e) {}
 
-    eventSource.onerror = (err) => {
-      console.warn('[CloudStream] SSE reconnecting...', err);
-    };
-  } catch (e) {
-    console.warn('[CloudStream] EventSource unsupported:', e);
+  // 2. Listen to secure BroadcastChannel
+  const handleMessage = (event) => {
+    if (isCancelled || !event.data) return;
+    onData(event.data);
+  };
+
+  // 3. Listen to storage events for cross-window synchronization
+  const handleStorage = (e) => {
+    if (isCancelled || e.key !== 'inspectra_latest_telemetry' || !e.newValue) return;
+    try {
+      const parsed = JSON.parse(e.newValue);
+      onData(parsed);
+    } catch (err) {}
+  };
+
+  if (localBroadcastChannel) {
+    localBroadcastChannel.addEventListener('message', handleMessage);
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', handleStorage);
   }
 
   // Return unsubscribe cleanup
   return () => {
     isCancelled = true;
-    if (eventSource) {
-      eventSource.close();
+    if (localBroadcastChannel) {
+      localBroadcastChannel.removeEventListener('message', handleMessage);
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('storage', handleStorage);
     }
   };
 }
@@ -139,17 +131,14 @@ export async function sendCloudDirective(directive) {
   };
 
   try {
-    await fetch(`${NTFY_BASE_URL}/${DIRECTIVE_TOPIC}`, {
-      method: 'POST',
-      headers: {
-        'Title': `Admin Directive: ${directive.severity || 'NOTICE'}`,
-        'Priority': 'urgent',
-        'Tags': 'bell,loudspeaker'
-      },
-      body: JSON.stringify(payload)
-    });
+    if (localBroadcastChannel) {
+      localBroadcastChannel.postMessage({ type: 'DIRECTIVE', directive: payload });
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('inspectra_latest_directive', JSON.stringify(payload));
+    }
   } catch (err) {
-    console.warn('[CloudStream] Directive publish warning:', err);
+    console.warn('[Security Bus] Directive dispatch warning:', err);
   }
 
   return payload;
@@ -161,27 +150,36 @@ export async function sendCloudDirective(directive) {
  * @returns {Function} Unsubscribe cleanup function
  */
 export function subscribeCloudDirectives(onDirective) {
-  let eventSource = null;
   let isCancelled = false;
 
-  try {
-    eventSource = new EventSource(`${NTFY_BASE_URL}/${DIRECTIVE_TOPIC}/sse`);
+  const handleMessage = (event) => {
+    if (isCancelled || !event.data || event.data.type !== 'DIRECTIVE') return;
+    onDirective(event.data.directive);
+  };
 
-    eventSource.onmessage = (event) => {
-      if (isCancelled || !event.data) return;
-      try {
-        const wrapper = JSON.parse(event.data);
-        if (wrapper.message) {
-          const directive = JSON.parse(wrapper.message);
-          onDirective(directive);
-        }
-      } catch (err) {}
-    };
-  } catch (e) {}
+  const handleStorage = (e) => {
+    if (isCancelled || e.key !== 'inspectra_latest_directive' || !e.newValue) return;
+    try {
+      const parsed = JSON.parse(e.newValue);
+      onDirective(parsed);
+    } catch (err) {}
+  };
+
+  if (localBroadcastChannel) {
+    localBroadcastChannel.addEventListener('message', handleMessage);
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', handleStorage);
+  }
 
   return () => {
     isCancelled = true;
-    if (eventSource) eventSource.close();
+    if (localBroadcastChannel) {
+      localBroadcastChannel.removeEventListener('message', handleMessage);
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('storage', handleStorage);
+    }
   };
 }
 

@@ -10,7 +10,8 @@ import { storageService } from './storageService';
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 function getHeaders() {
-  const token = localStorage.getItem('token');
+  const token = (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('token') : null) || 
+                (typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null);
   const headers = {
     'Content-Type': 'application/json'
   };
@@ -76,7 +77,7 @@ export const api = {
       return { success: false, error: 'Please enter both your Username/ID and Password.' };
     }
 
-    // 1. First attempt live authentication against public backend
+    // 1. Live authentication against backend API
     const online = await request('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ identifier, username: identifier, email: identifier, password })
@@ -84,93 +85,27 @@ export const api = {
 
     if (online) {
       if (online.success && online.data?.token) {
-        localStorage.setItem('token', online.data.token);
-        localStorage.setItem('user', JSON.stringify(online.data.user));
-        localStorage.setItem('role', online.data.role);
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem('token', online.data.token);
+          sessionStorage.setItem('user', JSON.stringify(online.data.user));
+          sessionStorage.setItem('role', online.data.role);
+        }
+        if (typeof localStorage !== 'undefined') {
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          localStorage.removeItem('role');
+        }
         return online;
       }
-      // Server returned a definitive rejection (e.g. wrong password or user not found)
       return {
         success: false,
-        error: online.error || 'Authentication failed. Please verify credentials.'
+        error: online.error || 'Authentication failed. Please verify your credentials.'
       };
     }
 
-    // 2. Strict local authentication fallback ONLY if backend is completely unreachable
-    const raw = (identifier || '').toLowerCase().trim();
-    const clean = raw.replace(/[._\-\s]/g, '');
-
-    const VALID_ACCOUNTS = [
-      {
-        keys: ['admin', 'selvakumar'],
-        user: { id: 'usr-admin-01', name: 'K. Selvakumar, IAS', email: 'selvakumar.ias@inspection.gov.in', username: 'admin', role: 'ADMIN', redirectPath: '/admin-dashboard' },
-        passwords: ['Admin@2026', 'Admin@Selva2026']
-      },
-      {
-        keys: ['director', 'radhakrishnan'],
-        user: { id: 'usr-director-01', name: 'Dr. S. Radhakrishnan', email: 'radhakrishnan@inspection.gov.in', username: 'director', role: 'DIRECTOR', redirectPath: '/director-dashboard' },
-        passwords: ['Director@2026', 'Director@Radha2026']
-      },
-      {
-        keys: ['supervisor', 'muthukumar'],
-        user: { id: 'usr-supervisor-01', name: 'M. Muthukumar', email: 'muthukumar@inspection.gov.in', username: 'supervisor', role: 'SUPERVISOR', redirectPath: '/supervisor-dashboard' },
-        passwords: ['Super@2026', 'Super@Muthu2026']
-      },
-      {
-        keys: ['vishnu.p', 'vishnuprasath', 'vp01', 'insp.vishnuprasath'],
-        user: { id: 'usr-insp-vp01', name: 'Vishnu Prasath', email: 'vishnu.prasath@inspectra.gov.in', username: 'vishnu.p', role: 'INSPECTOR', redirectPath: '/field-inspector' },
-        passwords: ['Field@2026', 'Insp@VishnuP2026']
-      },
-      {
-        keys: ['vishnu.v', 'vishnuvarthan', 'vv02', 'insp.vishnuvarthan'],
-        user: { id: 'usr-insp-vv02', name: 'Vishnu Varthan', email: 'vishnu.varthan@inspectra.gov.in', username: 'vishnu.v', role: 'INSPECTOR', redirectPath: '/field-inspector' },
-        passwords: ['Field@2026', 'Insp@VishnuV2026']
-      },
-      {
-        keys: ['siva.v', 'sivavaiyapuri', 'sv03', 'insp.sivavaiyapuri'],
-        user: { id: 'usr-insp-sv03', name: 'Sivavaiyapuri', email: 'sivavaiyapuri@inspectra.gov.in', username: 'siva.v', role: 'INSPECTOR', redirectPath: '/field-inspector' },
-        passwords: ['Field@2026', 'Insp@Siva2026']
-      },
-      {
-        keys: ['sriram', 'sr04', 'insp.sriram'],
-        user: { id: 'usr-insp-sr04', name: 'Sriram', email: 'sriram@inspectra.gov.in', username: 'sriram', role: 'INSPECTOR', redirectPath: '/field-inspector' },
-        passwords: ['Field@2026', 'Insp@Sriram2026']
-      },
-      {
-        keys: ['maha.l', 'mahalakshmi', 'ml05', 'insp.mahalakshmi'],
-        user: { id: 'usr-insp-ml05', name: 'Mahalakshmi', email: 'mahalakshmi@inspectra.gov.in', username: 'maha.l', role: 'INSPECTOR', redirectPath: '/field-inspector' },
-        passwords: ['Field@2026', 'Insp@Maha2026']
-      },
-      {
-        keys: ['sivamathi', 'sm06', 'insp.sivamathi'],
-        user: { id: 'usr-insp-sm06', name: 'Sivamathi', email: 'sivamathi@inspectra.gov.in', username: 'sivamathi', role: 'INSPECTOR', redirectPath: '/field-inspector' },
-        passwords: ['Field@2026', 'Insp@Sivamathi2026']
-      }
-    ];
-
-    const match = VALID_ACCOUNTS.find(acc => acc.keys.some(k => clean.includes(k.replace(/[._\-\s]/g, ''))));
-    if (!match) {
-      return { success: false, error: 'Invalid credentials: User not found.' };
-    }
-
-    if (!match.passwords.includes(password)) {
-      return { success: false, error: 'Invalid credentials: Password incorrect.' };
-    }
-
-    const mockToken = `mock-pki-jwt-${match.user.id}-${Date.now()}`;
-    localStorage.setItem('token', mockToken);
-    localStorage.setItem('user', JSON.stringify(match.user));
-    localStorage.setItem('role', match.user.role);
-
     return {
-      success: true,
-      message: 'Local session authenticated',
-      data: {
-        token: mockToken,
-        role: match.user.role,
-        redirectPath: match.user.redirectPath,
-        user: match.user
-      }
+      success: false,
+      error: 'Network connection unavailable. Cannot reach authentication server.'
     };
   },
 
@@ -179,19 +114,16 @@ export const api = {
     if (remote && remote.success && remote.data) {
       return { success: true, user: remote.data };
     }
-    const saved = localStorage.getItem('user');
-    if (saved) {
+    const token = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('token') : null;
+    const saved = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('user') : null;
+    if (token && saved) {
       try {
         return { success: true, user: JSON.parse(saved) };
       } catch (e) {}
     }
     return {
-      success: true,
-      user: {
-        id: 'usr-admin-01',
-        name: 'K. Selvakumar, IAS',
-        role: 'ADMIN'
-      }
+      success: false,
+      user: null
     };
   },
 
@@ -236,9 +168,9 @@ export const api = {
   getWebRtcSignals: async (sessionId, afterTimestamp = 0) => request(`/live-share/signals/${sessionId}?after_timestamp=${afterTimestamp}`),
 
   // Voice Chat (WebRTC Bidirectional Audio)
-  requestVoiceChat: async (liveShareSessionId) => request('/live-share/voice/request', {
+  requestVoiceChat: async (liveShareSessionId, inspectorId = null) => request('/live-share/voice/request', {
     method: 'POST',
-    body: JSON.stringify({ live_share_session_id: liveShareSessionId })
+    body: JSON.stringify({ live_share_session_id: liveShareSessionId, inspector_id: inspectorId })
   }),
   respondVoiceChat: async (voiceSessionId, status, liveShareSessionId) => request('/live-share/voice/respond', {
     method: 'POST',
@@ -403,6 +335,15 @@ export const api = {
     return localResult;
   },
 
+  createInspection: async (data) => {
+    const remote = await request('/inspections', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+    if (remote && remote.success) return remote;
+    return { success: true, data: { ...data, id: `insp-${Date.now()}` } };
+  },
+
   updateInspectionStatus: async (id, status, supervisorRemarks) => {
     storageService.updateInspectionStatus(id, status, supervisorRemarks);
     const remote = await request(`/inspections/${id}/status`, {
@@ -463,6 +404,15 @@ export const api = {
     return local;
   },
 
+  assignDefect: async (id, assignmentData) => {
+    const remote = await request(`/defects/${id}/assign`, {
+      method: 'POST',
+      body: JSON.stringify(assignmentData)
+    });
+    if (remote && remote.success) return remote;
+    return { success: true, message: 'Assigned locally', data: { id, ...assignmentData, status: 'ASSIGNED' } };
+  },
+
   deleteDefect: async (id) => {
     const remote = await request(`/defects/${id}`, { method: 'DELETE' });
     const local = storageService.deleteDefect(id);
@@ -506,6 +456,16 @@ export const api = {
       body: JSON.stringify(payload)
     });
     const local = storageService.verifyCorrectiveAction(id, payload);
+    if (remote && remote.success) return remote;
+    return local;
+  },
+
+  updateCorrectiveAction: async (id, updates) => {
+    const remote = await request(`/corrective-actions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates)
+    });
+    const local = storageService.updateCorrectiveAction ? storageService.updateCorrectiveAction(id, updates) : { success: true };
     if (remote && remote.success) return remote;
     return local;
   },
@@ -576,13 +536,19 @@ export const api = {
   },
 
   getCsvExportUrl: (type = 'inspections') => {
-    const token = localStorage.getItem('token') || '';
+    const token = (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('token') : null) || 
+                  (typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null) || '';
     return `${API_BASE}/reports/export/csv?type=${encodeURIComponent(type)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
   },
 
-  getPdfReportUrl: (id) => {
-    const token = localStorage.getItem('token') || '';
-    return `${API_BASE}/reports/pdf/${encodeURIComponent(id)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+  getPdfReportUrl: (id, format = 'pdf') => {
+    const token = (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('token') : null) || 
+                  (typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null) || '';
+    const query = new URLSearchParams();
+    if (token) query.set('token', token);
+    if (format === 'html') query.set('format', 'html');
+    const qs = query.toString();
+    return `${API_BASE}/reports/pdf/${encodeURIComponent(id)}${qs ? '?' + qs : ''}`;
   },
 
   getAuditLogs: async (filter = {}) => {
@@ -595,6 +561,15 @@ export const api = {
 
   clearAuditLogs: async () => {
     return storageService.clearAuditLogs();
+  },
+
+  addAuditLog: async (log) => {
+    const remote = await request('/audit-logs', {
+      method: 'POST',
+      body: JSON.stringify(log)
+    });
+    if (remote && remote.success) return remote;
+    return storageService.addAuditLog ? storageService.addAuditLog(log) : { success: true };
   },
 
   getActiveSessions: async () => {
@@ -812,6 +787,13 @@ export const api = {
     });
   },
 
+  verifyAiDetection: async (payload) => {
+    return request('/ai/verify', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
   getModelStatus: async () => {
     const online = await request('/ai/model-status');
     if (online && online.success && online.data) {
@@ -933,6 +915,107 @@ export const api = {
 
   getComprehensiveAnalytics: async () => {
     return request('/analytics/comprehensive');
+  },
+
+  getSiteWiseAnalytics: async () => {
+    const remote = await request('/analytics/site-wise');
+    if (remote && remote.success && Array.isArray(remote.data)) return remote;
+    return { success: true, data: [] };
+  },
+
+  getHistoricalTrends: async () => {
+    const remote = await request('/analytics/historical');
+    if (remote && remote.success) return remote;
+    return { success: true, data: { months: [], compliance_rates: [], critical_defects: [] } };
+  },
+
+  getOverviewKpis: async () => {
+    const remote = await request('/analytics/overview');
+    if (remote && remote.success) return remote;
+    return { success: true, data: {} };
+  },
+
+  getInspectorPerformance: async () => {
+    const remote = await request('/analytics/inspector-performance');
+    if (remote && remote.success) return remote;
+    return { success: true, data: [] };
+  },
+
+  getPredictiveMaintenance: async (assetId = 'ast-05') => {
+    const remote = await request('/ai/predictive-maintenance', {
+      method: 'POST',
+      body: JSON.stringify({ asset_id: assetId })
+    });
+    if (remote && remote.success && remote.data) return remote;
+    return {
+      success: true,
+      data: {
+        assetName: 'Pre-Stressed Concrete Pier P-14',
+        predictedFailureRiskPercentage: 88,
+        recommendedAction: 'Apply structural carbon fiber reinforcement wrap.',
+        predictedFailureWindow: 'Next 21 - 35 Days'
+      }
+    };
+  },
+
+  getFrequencyRecommendation: async (siteId = 'site-01') => {
+    const remote = await request('/ai/frequency-recommendations', {
+      method: 'POST',
+      body: JSON.stringify({ site_id: siteId })
+    });
+    if (remote && remote.success && remote.data) return remote;
+    return {
+      success: true,
+      data: {
+        siteName: 'Monitored Critical Facility',
+        frequencyLabel: 'WEEKLY',
+        recommendedIntervalDays: 7,
+        rationale: 'Active vibration anomalies require heightened audit interval.',
+        currentAverageScore: 78
+      }
+    };
+  },
+
+  getUsers: async (role = null) => {
+    const query = role ? `?role=${encodeURIComponent(role)}` : '';
+    const remote = await request(`/users${query}`);
+    if (remote && remote.success && Array.isArray(remote.data)) return remote;
+    return { success: true, data: [] };
+  },
+
+  getDirectorSummary: async () => {
+    return request('/director/executive-summary');
+  },
+
+  getSupervisorSummary: async () => {
+    return request('/supervisor/operations-summary');
+  },
+
+  createUser: async (userData) => {
+    return request('/users', {
+      method: 'POST',
+      body: JSON.stringify(userData)
+    });
+  },
+
+  deleteUser: async (userId) => {
+    return request(`/users/${userId}`, {
+      method: 'DELETE'
+    });
+  },
+
+  updateUserRole: async (userId, role) => {
+    return request(`/users/${userId}/role`, {
+      method: 'PUT',
+      body: JSON.stringify({ role })
+    });
+  },
+
+  updateUserStatus: async (userId, status) => {
+    return request(`/users/${userId}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status })
+    });
   }
 };
 

@@ -15,7 +15,6 @@ export const SYSTEM_ACCOUNTS = {
     post: 'Principal Administrator',
     badge: 'Principal Administrator / State Directorate',
     portal: 'Admin Command Center',
-    password: 'Admin@Selva2026',
     redirectPath: '/admin-dashboard'
   },
   DIRECTOR_RADHAKRISHNAN: {
@@ -26,8 +25,7 @@ export const SYSTEM_ACCOUNTS = {
     role: 'DIRECTOR',
     post: 'State Director of Inspections',
     badge: 'State Director of Inspections',
-    portal: 'Admin Command Center',
-    password: 'Director@Radha2026',
+    portal: 'Management Portal',
     redirectPath: '/admin-dashboard'
   },
   SUPERVISOR_MUTHUKUMAR: {
@@ -38,8 +36,7 @@ export const SYSTEM_ACCOUNTS = {
     role: 'SUPERVISOR',
     post: 'Chief Infrastructure Supervisor',
     badge: 'Chief Safety & Compliance Supervisor',
-    portal: 'Admin Command Center',
-    password: 'Super@Muthu2026',
+    portal: 'Management Portal',
     redirectPath: '/admin-dashboard'
   },
 
@@ -54,7 +51,6 @@ export const SYSTEM_ACCOUNTS = {
     badge: 'Lead Field Auditor / INSP-2026-VP01',
     portal: 'Field Inspector Portal',
     assignedSite: 'Northern Metro Corridor (Delhi Metro Phase 2)',
-    password: 'Insp@VishnuP2026',
     redirectPath: '/field-inspector'
   },
   INSPECTOR_VISHNU_VARTHAN: {
@@ -67,7 +63,6 @@ export const SYSTEM_ACCOUNTS = {
     badge: 'Field Structural Auditor / INSP-2026-VV02',
     portal: 'Field Inspector Portal',
     assignedSite: 'Eastern Railway Viaduct (Kolkata Metro Ext.)',
-    password: 'Insp@VishnuV2026',
     redirectPath: '/field-inspector'
   },
   INSPECTOR_SIVAVAIYAPURI: {
@@ -80,7 +75,6 @@ export const SYSTEM_ACCOUNTS = {
     badge: 'Senior NDT Specialist / INSP-2026-SV03',
     portal: 'Field Inspector Portal',
     assignedSite: 'Southern Coastal Bridge (Pamban Rail Complex)',
-    password: 'Insp@Siva2026',
     redirectPath: '/field-inspector'
   },
   INSPECTOR_SRIRAM: {
@@ -93,7 +87,6 @@ export const SYSTEM_ACCOUNTS = {
     badge: 'Highway & Geotech Auditor / INSP-2026-SR04',
     portal: 'Field Inspector Portal',
     assignedSite: 'Western Industrial Highway (Mumbai-Pune Expy)',
-    password: 'Insp@Sriram2026',
     redirectPath: '/field-inspector'
   },
   INSPECTOR_MAHALAKSHMI: {
@@ -106,7 +99,6 @@ export const SYSTEM_ACCOUNTS = {
     badge: 'Concrete & Seismic Specialist / INSP-2026-ML05',
     portal: 'Field Inspector Portal',
     assignedSite: 'Central Tunnel & Reservoir (Chenab Rail Arch)',
-    password: 'Insp@Maha2026',
     redirectPath: '/field-inspector'
   },
   INSPECTOR_SIVAMATHI: {
@@ -119,7 +111,6 @@ export const SYSTEM_ACCOUNTS = {
     badge: 'Bridge & Viaduct Auditor / INSP-2026-SM06',
     portal: 'Field Inspector Portal',
     assignedSite: 'Strategic Flyover & Viaduct (Bengaluru Elevated)',
-    password: 'Insp@Sivamathi2026',
     redirectPath: '/field-inspector'
   }
 };
@@ -135,30 +126,50 @@ export const DEMO_ACCOUNTS = {
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
     try {
-      const saved = localStorage.getItem('user');
-      return saved ? JSON.parse(saved) : null;
+      // Purge any stale legacy localStorage credentials that cause unintended auto-login
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        localStorage.removeItem('role');
+      }
+      const token = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('token') : null;
+      const saved = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('user') : null;
+      if (token && saved) {
+        return JSON.parse(saved);
+      }
+      return null;
     } catch (e) {
       return null;
     }
   });
   const [loading, setLoading] = useState(false);
 
-  // Authenticate session against database on startup to prevent client-side role forgery
+  // Authenticate session against database on startup to verify token & enforce server role
   useEffect(() => {
     async function verifySession() {
-      const token = localStorage.getItem('token');
+      const token = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('token') : null;
       if (token) {
         try {
           const res = await api.getProfile();
           if (res && res.success && res.data) {
-            // Re-sync authentic user profile and enforce server role directly from DB
             setUser(res.data);
-            localStorage.setItem('user', JSON.stringify(res.data));
-            localStorage.setItem('role', res.data.role);
-          } else if (res && (res.status === 401 || res.status === 403)) {
+            if (typeof sessionStorage !== 'undefined') {
+              sessionStorage.setItem('user', JSON.stringify(res.data));
+              sessionStorage.setItem('role', res.data.role);
+            }
+          } else if (res && (res.status === 401 || res.status === 403 || res.success === false)) {
             logout();
           }
-        } catch (e) {}
+        } catch (e) {
+          // Keep cached user if transient network error
+        }
+      } else {
+        // No token present: ensure clean unauthenticated state
+        setUser(null);
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.removeItem('user');
+          sessionStorage.removeItem('role');
+        }
       }
     }
     verifySession();
@@ -170,34 +181,46 @@ export function AuthProvider({ children }) {
     setLoading(false);
 
     const loggedUser = res.data?.user || res.user;
-    if (res.success && loggedUser) {
-      const token = res.data?.token || res.token || 'demo-jwt-token-smart-inspector';
-      localStorage.setItem('token', token);
-      localStorage.setItem('user', JSON.stringify(loggedUser));
-      localStorage.setItem('role', loggedUser.role);
+    const token = res.data?.token || res.token;
+    if (res.success && loggedUser && token) {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem('token', token);
+        sessionStorage.setItem('user', JSON.stringify(loggedUser));
+        sessionStorage.setItem('role', loggedUser.role);
+      }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        localStorage.removeItem('role');
+      }
       setUser(loggedUser);
       
       let redirectPath = '/admin-dashboard';
       if (loggedUser.role === 'INSPECTOR') {
         redirectPath = '/field-inspector';
-      } else if (loggedUser.role === 'DIRECTOR') {
-        redirectPath = '/director-dashboard';
-      } else if (loggedUser.role === 'SUPERVISOR') {
-        redirectPath = '/supervisor-dashboard';
+      } else {
+        redirectPath = '/admin-dashboard';
       }
 
       return { success: true, user: loggedUser, role: loggedUser.role, redirectPath };
     }
-    return { success: false, error: res.error || 'Login failed. Please verify credentials.' };
+    return { success: false, error: res.error || 'Authentication failed. Please verify credentials.' };
   };
 
   const logout = () => {
     try {
       cleanupLiveShareOnLogout();
     } catch (e) {}
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    localStorage.removeItem('role');
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem('token');
+      sessionStorage.removeItem('user');
+      sessionStorage.removeItem('role');
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      localStorage.removeItem('role');
+    }
     setUser(null);
   };
 
@@ -205,7 +228,9 @@ export function AuthProvider({ children }) {
     setUser(prev => {
       const merged = { ...prev, ...updatedFields };
       try {
-        localStorage.setItem('user', JSON.stringify(merged));
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem('user', JSON.stringify(merged));
+        }
       } catch (e) {}
       return merged;
     });

@@ -34,7 +34,9 @@ async function getOverviewKpis(req, res) {
         total_sites: sites.length,
         active_inspectors: inspectors.length,
         remediated_actions_count: verifiedActions,
-        geofence_compliance_percentage: 90.0
+        geofence_compliance_percentage: completed.length > 0 
+          ? parseFloat(((completed.filter(i => i.geofence_verified === true).length / completed.length) * 100).toFixed(1))
+          : 100.0
       }
     });
   } catch (err) {
@@ -241,6 +243,7 @@ async function getComprehensiveAnalytics(req, res) {
         total_reinspections: reinspections.length,
         total_ai_detections: totalAiDetections,
         false_detection_rate: falseDetectionRate,
+        ai_false_detection_rate: falseDetectionRate,
         verified_samples_count: verifiedSamples.length,
         issues_by_severity: severityMap,
         issues_by_category: categoryMap,

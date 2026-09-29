@@ -46,19 +46,26 @@ async function detectYolo(req, res) {
  */
 async function verifyDetection(req, res) {
   try {
-    const { detection_id, class_name, confidence, is_correct, feedback, inspection_id, site_id } = req.body;
+    const { detection_id, class_name, detection_class, confidence, is_correct, verified_status, feedback, inspection_id, site_id } = req.body;
 
-    if (typeof is_correct !== 'boolean') {
-      return res.status(400).json({ success: false, error: 'Field is_correct (boolean) is required.' });
+    let finalIsCorrect = is_correct;
+    if (typeof finalIsCorrect !== 'boolean') {
+      if (verified_status === 'CONFIRMED' || verified_status === 'PASS') {
+        finalIsCorrect = true;
+      } else if (verified_status === 'FALSE_POSITIVE' || verified_status === 'FAIL') {
+        finalIsCorrect = false;
+      } else {
+        return res.status(400).json({ success: false, error: 'Field is_correct (boolean) or verified_status ("CONFIRMED"|"FALSE_POSITIVE") is required.' });
+      }
     }
 
     const sample = {
       id: `sample-${uuidv4().slice(0, 8)}`,
       detection_id: detection_id || `det-${uuidv4().slice(0, 8)}`,
-      class_name: class_name || 'UNKNOWN',
+      class_name: class_name || detection_class || 'UNKNOWN',
       confidence: confidence || 0,
-      is_correct, // true: Confirmed Detection, false: False Positive
-      feedback: feedback || (is_correct ? 'Confirmed accurate on-site' : 'Marked as false detection'),
+      is_correct: finalIsCorrect, // true: Confirmed Detection, false: False Positive
+      feedback: feedback || (finalIsCorrect ? 'Confirmed accurate on-site' : 'Marked as false detection'),
       verifier_id: req.user?.id || 'usr-system',
       verifier_name: req.user?.name || 'Authorized Verifier',
       verifier_role: req.user?.role || 'INSPECTOR',

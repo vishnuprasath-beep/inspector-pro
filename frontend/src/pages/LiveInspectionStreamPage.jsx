@@ -1,11 +1,15 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   subscribeToInspectionStream, 
   getLatestStreamState,
-  sendAdminDirective,
-  runRealtimeYoloDetection
+  sendAdminDirective 
 } from '../services/yoloVisionService';
-import { initAdminWebRtc } from '../services/cloudStreamService';
+import { 
+  startViewerSession, 
+  stopViewerSession, 
+  subscribeToLiveShareUpdates 
+} from '../services/liveShareService';
+import api from '../services/api';
 import { 
   Radio, 
   Activity, 
@@ -27,178 +31,215 @@ import {
   Check,
   Smartphone,
   Video,
+  VideoOff,
   RefreshCw,
   Maximize2
 } from 'lucide-react';
 import InspectorCameraFullscreenModal from '../components/InspectorCameraFullscreenModal';
 
 export default function LiveInspectionStreamPage() {
+  const [rawInspectors, setRawInspectors] = useState([]);
+  const [activeSessions, setActiveSessions] = useState([]);
+  const [selectedInspectorId, setSelectedInspectorId] = useState(null);
   const [streamData, setStreamData] = useState(null);
-  const [simulationActive, setSimulationActive] = useState(false);
-  const [simTick, setSimTick] = useState(0);
   const [customDirective, setCustomDirective] = useState('');
   const [directiveSentMsg, setDirectiveSentMsg] = useState(null);
   const [capturedEvidenceList, setCapturedEvidenceList] = useState([]);
   const [webrtcStream, setWebrtcStream] = useState(null);
-  const [webrtcStatus, setWebrtcStatus] = useState('WAITING'); // 'WAITING' | 'CONNECTED' | 'CALLING' | 'READY' | 'ERROR'
-  const [viewportMode, setViewportMode] = useState('AUTO'); // 'AUTO' | 'WEBRTC' | 'SNAPSHOT'
+  const [webrtcStatus, setWebrtcStatus] = useState('IDLE'); // 'IDLE' | 'CONNECTING' | 'LIVE' | 'DISCONNECTED' | 'ERROR'
   const [captureAlert, setCaptureAlert] = useState(null);
   const [showFullscreen, setShowFullscreen] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const remoteVideoRef = useRef(null);
-  const adminPeerRef = useRef(null);
 
-  // 1. Subscribe to incoming live telemetry stream & WebRTC from Field Inspector
-  useEffect(() => {
-    // Initial state check
-    const initial = getLatestStreamState();
-    if (initial) {
-      setStreamData(initial);
-    }
+  // 1. Load real authenticated inspectors and active sessions from database
+  const loadData = async () => {
+    try {
+      const [inspRes, sharesRes] = await Promise.all([
+        api.getInspectors(),
+        api.getActiveLiveShares()
+      ]);
 
-    const unsubscribe = subscribeToInspectionStream((incoming) => {
-      setStreamData(incoming);
-      // If real stream arrives, turn off simulation
-      if (incoming && incoming.streamActive) {
-        setSimulationActive(false);
+      const insps = inspRes.success && Array.isArray(inspRes.data) ? inspRes.data : [];
+      const shares = sharesRes.success && Array.isArray(sharesRes.active_sessions) ? sharesRes.active_sessions : [];
+
+      setRawInspectors(insps);
+      setActiveSessions(shares);
+
+      // If an active session exists, auto-select that inspector
+      if (shares.length > 0) {
+        setSelectedInspectorId(shares[0].inspector_id);
+      } else if (insps.length > 0 && !selectedInspectorId) {
+        setSelectedInspectorId(insps[0].id || insps[0].user_id);
       }
+    } catch (err) {
+      console.warn('[LiveInspectionStreamPage] Failed to fetch initial data:', err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+
+    // Subscribe to live share updates
+    const unsubShares = subscribeToLiveShareUpdates({
+      role: 'ADMIN',
+      onActiveSharesUpdate: (data) => {
+        if (data && Array.isArray(data.active_sessions)) {
+          setActiveSessions(data.active_sessions);
+        }
+      },
+      intervalMs: 2000
+    });
+
+    // Subscribe to real-time telemetry from inspector's mobile
+    const initial = getLatestStreamState();
+    if (initial) setStreamData(initial);
+
+    const unsubTelemetry = subscribeToInspectionStream((incoming) => {
+      setStreamData(incoming);
 
       // Handle real-time mobile capture event
       if (incoming?.isCaptureEvent && incoming?.capturedPhotoUrl) {
         const evidenceItem = {
           id: `EV-LIVE-${Date.now()}`,
           timestamp: new Date().toLocaleTimeString(),
-          defect: incoming.primaryFinding || 'CONCRETE_SPALLING',
-          severity: incoming.primarySeverity || 'CRITICAL',
-          inspector: incoming.inspector?.name || 'R. Saravanan',
+          defect: incoming.primaryFinding || 'STRUCTURAL_ANOMALY',
+          severity: incoming.primarySeverity || 'HIGH',
+          inspector: incoming.inspector?.name || 'Field Inspector',
           image: incoming.capturedPhotoUrl
         };
         setCapturedEvidenceList(prev => [evidenceItem, ...prev]);
         setCaptureAlert({
-          message: `📸 New evidence captured on mobile by ${incoming.inspector?.name || 'R. Saravanan'}!`,
-          defect: incoming.primaryFinding || 'CONCRETE_SPALLING',
-          severity: incoming.primarySeverity || 'CRITICAL',
+          message: `📸 New evidence captured on mobile by ${incoming.inspector?.name || 'Field Inspector'}!`,
+          defect: incoming.primaryFinding || 'STRUCTURAL_ANOMALY',
+          severity: incoming.primarySeverity || 'HIGH',
           image: incoming.capturedPhotoUrl
         });
         setTimeout(() => setCaptureAlert(null), 9000);
       }
     });
 
-    // Initialize WebRTC P2P Receiver Node
-    try {
-      adminPeerRef.current = initAdminWebRtc(
-        (remoteMedia) => {
-          console.log('[LiveStreamPage] Remote MediaStream attached!');
-          setWebrtcStream(remoteMedia);
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = remoteMedia;
-            remoteVideoRef.current.play().catch(e => console.warn('Play remote video warning:', e));
-          }
-        },
-        (status) => {
-          setWebrtcStatus(status);
-        }
-      );
-    } catch (err) {
-      console.warn('WebRTC init error:', err);
-    }
-
     return () => {
-      unsubscribe();
-      if (adminPeerRef.current) {
-        adminPeerRef.current.close();
-      }
+      unsubShares();
+      unsubTelemetry();
+      stopViewerSession();
     };
   }, []);
 
-  // Sync webrtcStream to video ref when ready
+  // 2. Compute selected inspector and their active live session
+  const selectedInspector = useMemo(() => {
+    return rawInspectors.find(
+      i => i.id === selectedInspectorId || i.user_id === selectedInspectorId
+    ) || rawInspectors[0] || null;
+  }, [rawInspectors, selectedInspectorId]);
+
+  const activeSessionForInspector = useMemo(() => {
+    if (!selectedInspector) return null;
+    const uid = selectedInspector.user_id || selectedInspector.id;
+    return activeSessions.find(s => s.inspector_id === uid && s.status === 'ACTIVE') || null;
+  }, [selectedInspector, activeSessions]);
+
+  // 3. Establish WebRTC Peer Connection to the selected inspector's real session
   useEffect(() => {
-    if (remoteVideoRef.current && webrtcStream) {
-      remoteVideoRef.current.srcObject = webrtcStream;
+    if (!activeSessionForInspector || !activeSessionForInspector.id) {
+      stopViewerSession();
+      setWebrtcStream(null);
+      setWebrtcStatus('IDLE');
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+      return;
+    }
+
+    console.log(`[LiveStreamPage] Connecting to real WebRTC session: ${activeSessionForInspector.id}`);
+    setWebrtcStatus('CONNECTING');
+
+    startViewerSession({
+      sessionId: activeSessionForInspector.id,
+      role: 'ADMIN',
+      onRemoteStream: (stream, track) => {
+        console.log(`[LiveStreamPage] Received remote track: kind=${track?.kind}, readyState=${track?.readyState}`);
+        setWebrtcStream(stream);
+        if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== stream) {
+          remoteVideoRef.current.srcObject = stream;
+          remoteVideoRef.current.play().catch(e => console.warn('[LiveStreamPage] Video play note:', e.message));
+        }
+        if (stream.getVideoTracks().some(t => t.readyState === 'live')) {
+          setWebrtcStatus('LIVE');
+        }
+      },
+      onStateChange: ({ connectionState, iceConnectionState, hasVideo }) => {
+        console.log(`[LiveStreamPage] WebRTC State: ${connectionState}, ICE: ${iceConnectionState}`);
+        if (connectionState === 'connected' && hasVideo) {
+          setWebrtcStatus('LIVE');
+        } else if (connectionState === 'connecting' || iceConnectionState === 'checking') {
+          setWebrtcStatus('CONNECTING');
+        } else if (connectionState === 'failed' || connectionState === 'closed') {
+          setWebrtcStatus('DISCONNECTED');
+        }
+      },
+      onDisconnected: (reason) => {
+        console.log('[LiveStreamPage] WebRTC disconnected:', reason);
+        setWebrtcStatus('DISCONNECTED');
+        setWebrtcStream(null);
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+      }
+    }).catch(err => {
+      console.warn('[LiveStreamPage] WebRTC startViewer error:', err);
+      setWebrtcStatus('ERROR');
+    });
+
+    return () => {
+      stopViewerSession();
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    };
+  }, [activeSessionForInspector?.id]);
+
+  // Ensure video element plays when track is live
+  useEffect(() => {
+    if (remoteVideoRef.current && webrtcStream && webrtcStatus === 'LIVE') {
       remoteVideoRef.current.play().catch(() => {});
     }
-  }, [webrtcStream]);
-
-  // 2. Simulation Loop (Active when Admin wants to test without an inspector phone active)
-  useEffect(() => {
-    if (!simulationActive) return;
-
-    const interval = setInterval(() => {
-      setSimTick(t => t + 1);
-      const detection = runRealtimeYoloDetection({
-        frameIndex: simTick,
-        assetCategory: 'Civil',
-        primaryDefectKey: 'CONCRETE_SPALLING',
-        cameraActive: true
-      });
-
-      setStreamData({
-        streamActive: true,
-        cameraActive: true,
-        isSimulated: true,
-        inspector: {
-          name: 'R. Saravanan',
-          badge: 'INSP-2024-001',
-          role: 'Lead Field Auditor'
-        },
-        site: {
-          id: 'DEL-MET-02',
-          name: 'Delhi Metro Central Terminal (Phase 2)',
-          code: 'DEL-MET-02',
-          geofenceRadius: 650,
-          geofenceVerified: true
-        },
-        activeChecklistItem: 'Pier P-14 Concrete Integrity & Spalling',
-        checklistProgress: {
-          completed: 3,
-          total: 4,
-          percentage: 75
-        },
-        yoloEnabled: true,
-        fps: detection.fps,
-        primaryFinding: detection.primaryFinding,
-        primarySeverity: detection.primarySeverity,
-        detections: detection.detections,
-        previewSnapshot: 'https://images.unsplash.com/photo-1541888946425-d0fbb18615f8?w=1200&auto=format&fit=crop&q=80',
-        timestamp: Date.now()
-      });
-    }, 500);
-
-    return () => clearInterval(interval);
-  }, [simulationActive, simTick]);
+  }, [webrtcStream, webrtcStatus]);
 
   // Handle sending directive to field inspector
   const handleSendDirective = (message, severity = 'STANDARD') => {
-    const directive = sendAdminDirective({
+    if (!message.trim()) return;
+    sendAdminDirective({
       sender: 'K. Selvakumar, IAS (Admin)',
-      message,
+      message: message.trim(),
       severity
     });
-    setDirectiveSentMsg(`Directive dispatched: "${message}"`);
+    setDirectiveSentMsg(`Directive dispatched: "${message.trim()}"`);
     setTimeout(() => setDirectiveSentMsg(null), 4000);
     setCustomDirective('');
   };
 
   const handleCaptureAdminSnapshot = () => {
-    if (!streamData) return;
-    const evidenceItem = {
-      id: `EV-${Date.now()}`,
-      timestamp: new Date().toLocaleTimeString(),
-      defect: streamData.primaryFinding || 'CONCRETE_SPALLING',
-      severity: streamData.primarySeverity || 'CRITICAL',
-      inspector: streamData.inspector?.name || 'R. Saravanan',
-      image: streamData.previewSnapshot
-    };
-    setCapturedEvidenceList(prev => [evidenceItem, ...prev]);
+    if (!remoteVideoRef.current || !webrtcStream) return;
+    try {
+      const video = remoteVideoRef.current;
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+
+      const evidenceItem = {
+        id: `EV-ADMIN-${Date.now()}`,
+        timestamp: new Date().toLocaleTimeString(),
+        defect: 'OPERATOR_VERIFICATION',
+        severity: 'MEDIUM',
+        inspector: selectedInspector?.name || 'Field Inspector',
+        image: dataUrl
+      };
+      setCapturedEvidenceList(prev => [evidenceItem, ...prev]);
+    } catch (e) {}
   };
 
-  const activeData = streamData || {
-    streamActive: false,
-    inspector: { name: 'R. Saravanan', badge: 'INSP-2024-001' },
-    site: { name: 'Delhi Metro Central Terminal (Phase 2)' },
-    checklistProgress: { completed: 2, total: 4, percentage: 50 },
-    detections: []
-  };
+  const isLive = webrtcStatus === 'LIVE' && !!webrtcStream;
 
   return (
     <div className="page-body">
@@ -213,7 +254,9 @@ export default function LiveInspectionStreamPage() {
           backgroundColor: 'var(--card-bg)',
           borderRadius: 14,
           border: '1px solid rgba(56, 189, 248, 0.25)',
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)'
+          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)',
+          flexWrap: 'wrap',
+          gap: 14
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -223,14 +266,14 @@ export default function LiveInspectionStreamPage() {
               width: 44,
               height: 44,
               borderRadius: 10,
-              backgroundColor: 'rgba(239, 68, 68, 0.15)',
+              backgroundColor: isLive ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              border: '1px solid rgba(239, 68, 68, 0.4)'
+              border: `1px solid ${isLive ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'}`
             }}
           >
-            <Radio size={24} color="#ef4444" />
+            <Radio size={24} color={isLive ? '#10b981' : '#ef4444'} />
             <div 
               style={{
                 position: 'absolute',
@@ -239,8 +282,8 @@ export default function LiveInspectionStreamPage() {
                 width: 8,
                 height: 8,
                 borderRadius: '50%',
-                backgroundColor: '#ef4444',
-                boxShadow: '0 0 8px #ef4444'
+                backgroundColor: isLive ? '#10b981' : '#ef4444',
+                boxShadow: `0 0 8px ${isLive ? '#10b981' : '#ef4444'}`
               }}
             />
           </div>
@@ -255,71 +298,52 @@ export default function LiveInspectionStreamPage() {
                   borderRadius: 20,
                   fontSize: 10,
                   fontWeight: 800,
-                  backgroundColor: activeData.streamActive ? 'rgba(239, 68, 68, 0.2)' : 'rgba(100, 116, 139, 0.2)',
-                  color: activeData.streamActive ? '#ef4444' : '#94a3b8',
-                  border: `1px solid ${activeData.streamActive ? '#ef4444' : '#64748b'}`
+                  backgroundColor: isLive ? 'rgba(16, 185, 129, 0.2)' : webrtcStatus === 'CONNECTING' ? 'rgba(56, 189, 248, 0.2)' : 'rgba(100, 116, 139, 0.2)',
+                  color: isLive ? '#34d399' : webrtcStatus === 'CONNECTING' ? '#38bdf8' : '#94a3b8',
+                  border: `1px solid ${isLive ? '#10b981' : webrtcStatus === 'CONNECTING' ? '#38bdf8' : '#64748b'}`
                 }}
               >
-                {activeData.streamActive ? '● BROADCAST LIVE' : '○ STANDBY'}
+                {isLive ? '● BROADCAST LIVE' : webrtcStatus === 'CONNECTING' ? 'CONNECTING...' : '○ STANDBY'}
               </span>
-              {activeData.isSimulated && (
-                <span style={{ fontSize: 10, color: '#f59e0b', fontWeight: 700 }}>
-                  (Interactive Demo Simulation)
-                </span>
-              )}
             </div>
             <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-dim)' }}>
-              Real-time synchronization with Field Inspector camera, YOLO defect bounding boxes, and statutory progress.
+              Real-time synchronization with Field Inspector camera feed, mobile telemetry, and field directives.
             </p>
           </div>
         </div>
 
-        {/* Live Controls */}
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          {/* Reconnect WebRTC Button */}
-          <button
-            onClick={() => {
-              if (adminPeerRef.current) adminPeerRef.current.reconnect();
-            }}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '8px 12px',
-              backgroundColor: webrtcStatus === 'CONNECTED' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(56, 189, 248, 0.15)',
-              border: `1px solid ${webrtcStatus === 'CONNECTED' ? '#10b981' : 'var(--accent-cyan)'}`,
-              borderRadius: 8,
-              color: webrtcStatus === 'CONNECTED' ? '#34d399' : '#38bdf8',
-              fontSize: 12,
-              fontWeight: 700,
-              cursor: 'pointer'
-            }}
-            title="Attempt direct P2P WebRTC connection with inspector mobile phone"
-          >
-            <Video size={14} />
-            <span>{webrtcStatus === 'CONNECTED' ? 'WebRTC P2P Active' : 'Connect WebRTC'}</span>
-          </button>
+        {/* Top Controls: Inspector Picker & Action Buttons */}
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Inspector Selection Dropdown */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(15, 23, 42, 0.7)', padding: '4px 10px', borderRadius: 8, border: '1px solid rgba(255, 255, 255, 0.1)' }}>
+            <User size={14} color="var(--accent-cyan)" />
+            <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>Auditor:</span>
+            <select
+              value={selectedInspectorId || ''}
+              onChange={(e) => setSelectedInspectorId(e.target.value)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#ffffff',
+                fontSize: 12,
+                fontWeight: 700,
+                outline: 'none',
+                cursor: 'pointer'
+              }}
+            >
+              {rawInspectors.map(insp => {
+                const uid = insp.user_id || insp.id;
+                const hasSession = activeSessions.some(s => s.inspector_id === uid && s.status === 'ACTIVE');
+                return (
+                  <option key={uid} value={uid} style={{ background: '#0f172a', color: '#fff' }}>
+                    {insp.name} {hasSession ? '🔴 [Broadcasting]' : `(${insp.status || 'Active'})`}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
 
-          <button
-            onClick={() => setSimulationActive(v => !v)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '8px 14px',
-              backgroundColor: simulationActive ? 'rgba(239, 68, 68, 0.2)' : 'rgba(56, 189, 248, 0.15)',
-              border: `1px solid ${simulationActive ? '#ef4444' : 'var(--accent-cyan)'}`,
-              borderRadius: 8,
-              color: simulationActive ? '#fca5a5' : '#38bdf8',
-              fontSize: 12,
-              fontWeight: 700,
-              cursor: 'pointer'
-            }}
-          >
-            <Zap size={14} />
-            <span>{simulationActive ? 'Stop Simulation' : 'Simulate Field Stream'}</span>
-          </button>
-
+          {/* Full Screen Camera Button */}
           <button
             onClick={() => setShowFullscreen(true)}
             style={{
@@ -327,19 +351,18 @@ export default function LiveInspectionStreamPage() {
               alignItems: 'center',
               gap: 8,
               padding: '8px 16px',
-              backgroundColor: 'rgba(239, 68, 68, 0.2)',
-              border: '1px solid #ef4444',
+              backgroundColor: isLive ? 'rgba(16, 185, 129, 0.2)' : 'rgba(56, 189, 248, 0.15)',
+              border: `1px solid ${isLive ? '#10b981' : 'var(--accent-cyan)'}`,
               borderRadius: 8,
-              color: '#fca5a5',
+              color: isLive ? '#34d399' : '#38bdf8',
               fontSize: 12,
               fontWeight: 800,
-              cursor: 'pointer',
-              boxShadow: '0 0 16px rgba(239, 68, 68, 0.25)'
+              cursor: 'pointer'
             }}
-            title="Open Inspector's Live Camera in Full Screen Mode"
+            title="Open Inspector Live Stream in Full Screen Mode"
           >
             <Maximize2 size={14} />
-            <span>Full Screen Camera</span>
+            <span>Full Screen View</span>
           </button>
 
           <button
@@ -349,17 +372,17 @@ export default function LiveInspectionStreamPage() {
               alignItems: 'center',
               gap: 8,
               padding: '8px 14px',
-              backgroundColor: 'rgba(16, 185, 129, 0.15)',
-              border: '1px solid #10b981',
+              backgroundColor: 'rgba(56, 189, 248, 0.12)',
+              border: '1px solid rgba(56, 189, 248, 0.3)',
               borderRadius: 8,
-              color: '#34d399',
+              color: '#38bdf8',
               fontSize: 12,
               fontWeight: 700,
               cursor: 'pointer'
             }}
           >
             <Smartphone size={14} />
-            <span>Open Inspector Portal</span>
+            <span>Open Mobile Portal</span>
           </button>
         </div>
       </div>
@@ -367,7 +390,7 @@ export default function LiveInspectionStreamPage() {
       {/* 2. Main Dual-Panel Layout */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: 20 }}>
         
-        {/* LEFT: Live Video Feed & Bounding Box Viewport */}
+        {/* LEFT: Authoritative Live Video Feed */}
         <div 
           style={{ 
             backgroundColor: 'var(--card-bg)', 
@@ -392,7 +415,7 @@ export default function LiveInspectionStreamPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <Camera size={16} color="var(--accent-cyan)" />
               <span style={{ fontSize: 13, fontWeight: 700, color: '#ffffff' }}>
-                Field Optical Feed • {activeData.inspector?.name || 'R. Saravanan'}
+                Field Optical Feed &bull; {selectedInspector?.name || 'Field Inspector'}
               </span>
               <span
                 style={{
@@ -400,102 +423,45 @@ export default function LiveInspectionStreamPage() {
                   fontWeight: 800,
                   padding: '2px 8px',
                   borderRadius: 20,
-                  backgroundColor: webrtcStatus === 'CONNECTED' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(56, 189, 248, 0.15)',
-                  border: `1px solid ${webrtcStatus === 'CONNECTED' ? '#10b981' : 'rgba(56, 189, 248, 0.4)'}`,
-                  color: webrtcStatus === 'CONNECTED' ? '#34d399' : '#38bdf8'
+                  backgroundColor: isLive ? 'rgba(16, 185, 129, 0.2)' : 'rgba(100, 116, 139, 0.2)',
+                  border: `1px solid ${isLive ? '#10b981' : 'rgba(100, 116, 139, 0.4)'}`,
+                  color: isLive ? '#34d399' : '#94a3b8'
                 }}
               >
-                {webrtcStatus === 'CONNECTED' ? '● 30FPS WEBRTC P2P' : '☁️ CLOUD SYNC RELAY'}
+                {isLive ? '● WEBRTC REAL-TIME' : '○ STANDBY'}
               </span>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              {/* Viewport Mode Switcher */}
-              <div style={{ display: 'flex', background: 'rgba(15, 23, 42, 0.8)', padding: 2, borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {isLive && (
                 <button
-                  onClick={() => setViewportMode('AUTO')}
+                  onClick={handleCaptureAdminSnapshot}
                   style={{
-                    padding: '3px 8px',
-                    fontSize: 9.5,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    padding: '4px 10px',
+                    fontSize: 11,
                     fontWeight: 700,
-                    borderRadius: 4,
-                    border: 'none',
-                    background: viewportMode === 'AUTO' ? 'rgba(56, 189, 248, 0.3)' : 'transparent',
-                    color: viewportMode === 'AUTO' ? '#38bdf8' : '#94a3b8',
+                    borderRadius: 6,
+                    background: 'rgba(56, 189, 248, 0.15)',
+                    border: '1px solid #38bdf8',
+                    color: '#38bdf8',
                     cursor: 'pointer'
                   }}
+                  title="Capture live frame snapshot to evidence register"
                 >
-                  Auto
+                  <Camera size={12} />
+                  <span>Snapshot</span>
                 </button>
-                <button
-                  onClick={() => setViewportMode('WEBRTC')}
-                  style={{
-                    padding: '3px 8px',
-                    fontSize: 9.5,
-                    fontWeight: 700,
-                    borderRadius: 4,
-                    border: 'none',
-                    background: viewportMode === 'WEBRTC' ? 'rgba(16, 185, 129, 0.3)' : 'transparent',
-                    color: viewportMode === 'WEBRTC' ? '#34d399' : '#94a3b8',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Live Video
-                </button>
-                <button
-                  onClick={() => setViewportMode('SNAPSHOT')}
-                  style={{
-                    padding: '3px 8px',
-                    fontSize: 9.5,
-                    fontWeight: 700,
-                    borderRadius: 4,
-                    border: 'none',
-                    background: viewportMode === 'SNAPSHOT' ? 'rgba(56, 189, 248, 0.3)' : 'transparent',
-                    color: viewportMode === 'SNAPSHOT' ? '#38bdf8' : '#94a3b8',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Cloud Frames
-                </button>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#10b981' }}>
-                <Wifi size={13} />
-                <span>Cloud Relay</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#38bdf8' }}>
-                <Activity size={13} />
-                <span>{webrtcStatus === 'CONNECTED' ? '30.0' : (activeData.fps || 28.2)} FPS</span>
-              </div>
-
-              {/* Full Screen Mode Button */}
-              <button
-                onClick={() => setShowFullscreen(true)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 5,
-                  padding: '5px 12px',
-                  backgroundColor: 'rgba(56, 189, 248, 0.2)',
-                  border: '1px solid var(--accent-cyan)',
-                  borderRadius: 6,
-                  color: '#38bdf8',
-                  fontSize: 11,
-                  fontWeight: 800,
-                  cursor: 'pointer'
-                }}
-                title="Expand Camera into Full Screen View"
-              >
-                <Maximize2 size={13} />
-                <span>Full Screen</span>
-              </button>
+              )}
             </div>
           </div>
 
           {/* Viewport Container */}
           <div 
             onDoubleClick={() => setShowFullscreen(true)}
-            title="Double-click to open in Full Screen"
+            title={isLive ? "Double-click to open Full Screen" : ""}
             style={{ 
               position: 'relative', 
               width: '100%', 
@@ -504,53 +470,79 @@ export default function LiveInspectionStreamPage() {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              overflow: 'hidden',
-              cursor: 'pointer'
+              overflow: 'hidden'
             }}
           >
-            {/* Live WebRTC Video Track from Inspector's Phone */}
+            {/* Real WebRTC Video Element — Always mounted in DOM */}
             <video
               ref={remoteVideoRef}
               playsInline
               autoPlay
               muted
+              onLoadedMetadata={(e) => {
+                e.target.play().catch(err => console.warn('[LiveStreamPage] Metadata play warning:', err));
+              }}
               style={{
+                position: 'absolute',
+                inset: 0,
                 width: '100%',
                 height: '100%',
-                objectFit: 'cover',
-                display: (webrtcStream && (viewportMode === 'WEBRTC' || viewportMode === 'AUTO')) ? 'block' : 'none'
+                objectFit: 'contain',
+                backgroundColor: '#000000',
+                zIndex: 1
               }}
             />
 
-            {/* Cloud Frame Snapshot View (when WebRTC is idle or SNAPSHOT selected) */}
-            {(!webrtcStream || viewportMode === 'SNAPSHOT') && (
-              activeData.previewSnapshot ? (
-                <img
-                  src={activeData.previewSnapshot}
-                  alt="Live Telemetry Viewport"
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'cover',
-                    filter: 'brightness(0.9) contrast(1.05)'
-                  }}
-                />
-              ) : (
-                <div style={{ textAlign: 'center', padding: 20 }}>
-                  <Radio size={48} color="#64748b" style={{ marginBottom: 12 }} />
-                  <h4 style={{ color: '#ffffff', margin: '0 0 6px' }}>Standby — Waiting for Inspector Stream</h4>
-                  <p style={{ color: '#94a3b8', fontSize: 13, maxWidth: 380, margin: '0 auto 16px' }}>
-                    The live stream connects automatically across the internet whenever Field Inspector R. Saravanan opens the camera feed on their phone.
-                  </p>
-                  <button
-                    onClick={() => setSimulationActive(true)}
-                    className="btn btn-primary"
-                    style={{ fontSize: 12 }}
-                  >
-                    <Zap size={14} /> Simulate Active Field Inspection
-                  </button>
-                </div>
-              )
+            {/* Standby / Status Placeholder Overlay when Video is NOT Live */}
+            {!isLive && (
+              <div 
+                style={{ 
+                  position: 'absolute',
+                  inset: 0,
+                  zIndex: 5,
+                  backgroundColor: '#070b14',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: 24,
+                  textAlign: 'center'
+                }}
+              >
+                {webrtcStatus === 'CONNECTING' ? (
+                  <>
+                    <div style={{ width: 44, height: 44, border: '3px solid rgba(56, 189, 248, 0.2)', borderTopColor: '#38bdf8', borderRadius: '50%', animation: 'spin 1s linear infinite', marginBottom: 14 }} />
+                    <h4 style={{ color: '#ffffff', margin: '0 0 6px', fontSize: 16 }}>Connecting to Inspector Stream...</h4>
+                    <p style={{ color: '#94a3b8', fontSize: 13, maxWidth: 380, margin: '0 auto' }}>
+                      Negotiating WebRTC peer connection with {selectedInspector?.name || 'Inspector'}.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'rgba(148, 163, 184, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(148, 163, 184, 0.2)', marginBottom: 14 }}>
+                      <VideoOff size={24} color="#94a3b8" />
+                    </div>
+                    <h4 style={{ color: '#ffffff', margin: '0 0 6px', fontSize: 16 }}>
+                      Standby — No Live Stream Active for {selectedInspector?.name || 'Selected Inspector'}
+                    </h4>
+                    <p style={{ color: '#94a3b8', fontSize: 13, maxWidth: 420, margin: '0 auto 16px' }}>
+                      {activeSessionForInspector 
+                        ? 'Broadcaster session registered. Waiting for media packets...'
+                        : `Inspector ${selectedInspector?.name || ''} (ID: ${selectedInspector?.user_id || selectedInspector?.id || 'N/A'}) is currently not broadcasting camera. Go to Inspector Monitoring to dispatch a camera request.`}
+                    </p>
+                    <button
+                      onClick={() => {
+                        window.location.hash = '#inspector-monitoring';
+                        window.location.href = '/admin-dashboard';
+                      }}
+                      className="btn btn-primary"
+                      style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}
+                    >
+                      <Video size={14} /> Open Inspector Monitoring
+                    </button>
+                  </>
+                )}
+              </div>
             )}
 
             {/* Incoming Capture Alert Toast Banner */}
@@ -596,149 +588,10 @@ export default function LiveInspectionStreamPage() {
                 </button>
               </div>
             )}
-
-            {/* Scanline Grid */}
-            <div 
-              style={{
-                position: 'absolute',
-                inset: 0,
-                backgroundImage: 'linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.03))',
-                backgroundSize: '100% 3px, 6px 100%',
-                pointerEvents: 'none',
-                opacity: 0.6
-              }}
-            />
-
-            {/* Live YOLO Bounding Boxes HUD Overlay */}
-            {activeData.detections?.map((det, index) => (
-              <div
-                key={det.id || index}
-                style={{
-                  position: 'absolute',
-                  left: `${det.box.x}%`,
-                  top: `${det.box.y}%`,
-                  width: `${det.box.width}%`,
-                  height: `${det.box.height}%`,
-                  border: `2px solid ${det.color}`,
-                  backgroundColor: det.severity === 'CRITICAL' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(245, 158, 11, 0.1)',
-                  boxShadow: `0 0 16px ${det.color}50`,
-                  borderRadius: 4,
-                  pointerEvents: 'none',
-                  transition: 'all 0.35s ease'
-                }}
-              >
-                {/* Top Pill */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: -24,
-                    left: -2,
-                    backgroundColor: det.color,
-                    color: '#ffffff',
-                    padding: '2px 8px',
-                    borderRadius: 4,
-                    fontSize: 10,
-                    fontWeight: 800,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.6)'
-                  }}
-                >
-                  <Zap size={11} />
-                  <span>{det.label}</span>
-                  <span style={{ backgroundColor: 'rgba(0,0,0,0.4)', padding: '1px 4px', borderRadius: 3, fontSize: 9 }}>
-                    {det.confidenceScore}%
-                  </span>
-                </div>
-
-                {/* Bottom Spec Code */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    bottom: -18,
-                    right: 0,
-                    backgroundColor: 'rgba(15, 23, 42, 0.9)',
-                    color: det.color,
-                    border: `1px solid ${det.color}60`,
-                    padding: '1px 6px',
-                    borderRadius: 3,
-                    fontSize: 9,
-                    fontWeight: 700
-                  }}
-                >
-                  {det.specCode}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Viewport Bottom Controls */}
-          <div 
-            style={{ 
-              padding: '12px 16px', 
-              backgroundColor: 'rgba(15, 23, 42, 0.7)', 
-              borderTop: '1px solid var(--border-color)',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center'
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span style={{ fontSize: 11, color: '#94a3b8' }}>
-                Active Target: <strong style={{ color: '#ffffff' }}>{activeData.site?.name || 'Delhi Metro Terminal'}</strong>
-              </span>
-              <span style={{ fontSize: 11, color: '#10b981', fontWeight: 600 }}>
-                ✓ GPS Geofence Locked
-              </span>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <button
-                onClick={() => setShowFullscreen(true)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '6px 12px',
-                  backgroundColor: 'rgba(239, 68, 68, 0.2)',
-                  border: '1px solid #ef4444',
-                  borderRadius: 6,
-                  color: '#fca5a5',
-                  fontSize: 11,
-                  fontWeight: 700,
-                  cursor: 'pointer'
-                }}
-                title="View Inspector's Camera in Full Screen"
-              >
-                <Maximize2 size={13} />
-                <span>Full Screen</span>
-              </button>
-
-              <button
-                onClick={handleCaptureAdminSnapshot}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '6px 12px',
-                  backgroundColor: 'rgba(56, 189, 248, 0.15)',
-                  border: '1px solid var(--accent-cyan)',
-                  borderRadius: 6,
-                  color: '#38bdf8',
-                  fontSize: 11,
-                  fontWeight: 700,
-                  cursor: 'pointer'
-                }}
-              >
-                <Download size={13} />
-                <span>Capture Evidence Snapshot</span>
-              </button>
-            </div>
           </div>
         </div>
 
-        {/* RIGHT: Live Telemetry HUD, Defect Diagnostics, Directives */}
+        {/* RIGHT: Live Telemetry HUD, Directives & Evidence Register */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           
           {/* A. Live Inspector Telemetry Card */}
@@ -758,46 +611,26 @@ export default function LiveInspectionStreamPage() {
               <div style={{ padding: '8px 10px', backgroundColor: 'rgba(15, 23, 42, 0.5)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.06)' }}>
                 <p style={{ margin: 0, fontSize: 10, color: 'var(--text-dim)' }}>Auditor</p>
                 <p style={{ margin: '2px 0 0', fontSize: 12, fontWeight: 700, color: '#ffffff' }}>
-                  {activeData.inspector?.name || 'R. Saravanan'}
+                  {selectedInspector?.name || 'Vishnu Prasath'}
                 </p>
                 <p style={{ margin: 0, fontSize: 9.5, color: '#38bdf8' }}>
-                  {activeData.inspector?.badge || 'INSP-2024-001'}
+                  {selectedInspector?.badge_number || selectedInspector?.employee_code || selectedInspector?.id || 'INSP-2026'}
                 </p>
               </div>
 
               <div style={{ padding: '8px 10px', backgroundColor: 'rgba(15, 23, 42, 0.5)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.06)' }}>
-                <p style={{ margin: 0, fontSize: 10, color: 'var(--text-dim)' }}>Geofence Radius</p>
+                <p style={{ margin: 0, fontSize: 10, color: 'var(--text-dim)' }}>Assigned Facility</p>
                 <p style={{ margin: '2px 0 0', fontSize: 12, fontWeight: 700, color: '#10b981' }}>
-                  650m (On-Site)
+                  {selectedInspector?.assigned_site_name || 'Central Infrastructure Terminal'}
                 </p>
                 <p style={{ margin: 0, fontSize: 9.5, color: '#94a3b8' }}>
-                  Haversine Anti-Fraud
+                  Status: {selectedInspector?.status || 'Active'}
                 </p>
-              </div>
-            </div>
-
-            {/* Checklist Progress */}
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
-                <span style={{ color: 'var(--text-dim)' }}>Live Checklist Progress</span>
-                <span style={{ color: '#38bdf8', fontWeight: 700 }}>
-                  {activeData.checklistProgress?.completed || 3} of {activeData.checklistProgress?.total || 4} ({activeData.checklistProgress?.percentage || 75}%)
-                </span>
-              </div>
-              <div style={{ width: '100%', height: 6, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' }}>
-                <div 
-                  style={{ 
-                    width: `${activeData.checklistProgress?.percentage || 75}%`, 
-                    height: '100%', 
-                    backgroundColor: 'var(--accent-cyan)',
-                    transition: 'width 0.4s ease'
-                  }} 
-                />
               </div>
             </div>
           </div>
 
-          {/* B. Primary Defect Diagnostic Card */}
+          {/* B. Admin Real-Time Directive Dispatcher */}
           <div 
             style={{ 
               backgroundColor: 'var(--card-bg)', 
@@ -808,213 +641,141 @@ export default function LiveInspectionStreamPage() {
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
               <h4 style={{ margin: 0, fontSize: 13, fontWeight: 800, color: '#ffffff', textTransform: 'uppercase' }}>
-                YOLO Defect Diagnostics
+                Dispatch Field Directive
               </h4>
-              <span
+              <span style={{ fontSize: 10, color: '#38bdf8', fontWeight: 700 }}>Real-Time Push</span>
+            </div>
+
+            {directiveSentMsg && (
+              <div style={{ padding: '8px 10px', backgroundColor: 'rgba(16, 185, 129, 0.15)', border: '1px solid #10b981', borderRadius: 6, color: '#34d399', fontSize: 11, marginBottom: 10 }}>
+                {directiveSentMsg}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+              <input
+                type="text"
+                value={customDirective}
+                onChange={(e) => setCustomDirective(e.target.value)}
+                placeholder="Type directive to field inspector..."
                 style={{
-                  padding: '2px 8px',
-                  borderRadius: 4,
-                  fontSize: 10,
-                  fontWeight: 800,
-                  backgroundColor: 'rgba(239, 68, 68, 0.2)',
-                  color: '#ef4444',
-                  border: '1px solid rgba(239, 68, 68, 0.4)'
+                  flex: 1,
+                  padding: '8px 12px',
+                  backgroundColor: 'rgba(15, 23, 42, 0.6)',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  borderRadius: 6,
+                  color: '#ffffff',
+                  fontSize: 12,
+                  outline: 'none'
                 }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSendDirective(customDirective);
+                }}
+              />
+              <button
+                onClick={() => handleSendDirective(customDirective)}
+                className="btn btn-primary btn-sm"
+                style={{ padding: '8px 14px' }}
               >
-                {activeData.primarySeverity || 'CRITICAL'}
-              </span>
+                <Send size={13} />
+              </button>
             </div>
 
-            <div style={{ padding: '10px 12px', backgroundColor: 'rgba(239, 68, 68, 0.08)', borderRadius: 8, border: '1px solid rgba(239, 68, 68, 0.25)', marginBottom: 10 }}>
-              <p style={{ margin: 0, fontSize: 12, fontWeight: 800, color: '#ffffff' }}>
-                {activeData.primaryFinding || 'Concrete Spalling & Delamination'}
-              </p>
-              <p style={{ margin: '4px 0 0', fontSize: 11, color: '#fca5a5', lineHeight: 1.4 }}>
-                Ultrasonic pulse velocity test advised. Spalling depth exceeds safety threshold. Reinforcement oxidation risk detected.
-              </p>
-            </div>
-
-            <div style={{ fontSize: 11, color: '#94a3b8' }}>
-              Statutory Code: <strong style={{ color: '#ffffff' }}>IS 456:2000 / IRC:SP:40</strong>
+            {/* Quick Preset Directives */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {[
+                'Hold position & inspect Pier P-14',
+                'Capture high-res evidence photo',
+                'Re-check reinforcement spacing',
+                'Verify safety barricade clearance'
+              ].map((preset, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => handleSendDirective(preset)}
+                  style={{
+                    padding: '4px 8px',
+                    fontSize: 10.5,
+                    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: 4,
+                    color: '#94a3b8',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  + {preset}
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* C. Admin Real-Time Directive Dispatcher */}
+          {/* C. Captured Evidence Register */}
           <div 
             style={{ 
               backgroundColor: 'var(--card-bg)', 
               borderRadius: 14, 
               border: '1px solid var(--border-color)',
-              padding: '16px'
+              padding: '16px',
+              flex: 1
             }}
           >
-            <h4 style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 800, color: '#ffffff', textTransform: 'uppercase' }}>
-              Transmit Directive to Field
-            </h4>
-
-            {directiveSentMsg && (
-              <div style={{ padding: '6px 10px', backgroundColor: 'rgba(16, 185, 129, 0.2)', border: '1px solid #10b981', borderRadius: 6, color: '#34d399', fontSize: 11, marginBottom: 10 }}>
-                {directiveSentMsg}
-              </div>
-            )}
-
-            {/* Quick Action Preset Directives */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 10 }}>
-              <button
-                onClick={() => handleSendDirective('Please zoom in and capture close-up of rebar spalling.', 'HIGH')}
-                style={{
-                  padding: '6px 10px',
-                  backgroundColor: 'rgba(56, 189, 248, 0.1)',
-                  border: '1px solid rgba(56, 189, 248, 0.3)',
-                  borderRadius: 6,
-                  color: '#38bdf8',
-                  fontSize: 10.5,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  textAlign: 'left'
-                }}
-              >
-                ⚡ Request Close-Up
-              </button>
-
-              <button
-                onClick={() => handleSendDirective('Flagged as High Criticality. Direct mitigation mandatory.', 'CRITICAL')}
-                style={{
-                  padding: '6px 10px',
-                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                  border: '1px solid rgba(239, 68, 68, 0.3)',
-                  borderRadius: 6,
-                  color: '#f87171',
-                  fontSize: 10.5,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  textAlign: 'left'
-                }}
-              >
-                ⚠️ Flag High Severity
-              </button>
-
-              <button
-                onClick={() => handleSendDirective('Frame verified by HQ Admin. Proceed to shutter capture.', 'STANDARD')}
-                style={{
-                  padding: '6px 10px',
-                  backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                  border: '1px solid rgba(16, 185, 129, 0.3)',
-                  borderRadius: 6,
-                  color: '#34d399',
-                  fontSize: 10.5,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  textAlign: 'left'
-                }}
-              >
-                ✓ Approve Capture
-              </button>
-
-              <button
-                onClick={() => handleSendDirective('Check structural expansion joint alignment before moving.', 'STANDARD')}
-                style={{
-                  padding: '6px 10px',
-                  backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                  border: '1px solid rgba(245, 158, 11, 0.3)',
-                  borderRadius: 6,
-                  color: '#fbbf24',
-                  fontSize: 10.5,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  textAlign: 'left'
-                }}
-              >
-                🔍 Inspect Joints
-              </button>
-            </div>
-
-            {/* Custom Directive Input */}
-            <div style={{ display: 'flex', gap: 6 }}>
-              <input
-                type="text"
-                value={customDirective}
-                onChange={e => setCustomDirective(e.target.value)}
-                placeholder="Type custom field message..."
-                style={{
-                  flex: 1,
-                  padding: '7px 10px',
-                  backgroundColor: 'rgba(15, 23, 42, 0.8)',
-                  border: '1px solid rgba(255, 255, 255, 0.15)',
-                  borderRadius: 6,
-                  color: '#ffffff',
-                  fontSize: 11
-                }}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && customDirective.trim()) {
-                    handleSendDirective(customDirective.trim());
-                  }
-                }}
-              />
-              <button
-                onClick={() => {
-                  if (customDirective.trim()) handleSendDirective(customDirective.trim());
-                }}
-                style={{
-                  padding: '7px 12px',
-                  backgroundColor: 'var(--accent-cyan)',
-                  border: 'none',
-                  borderRadius: 6,
-                  color: '#000000',
-                  fontWeight: 800,
-                  cursor: 'pointer'
-                }}
-              >
-                <Send size={13} />
-              </button>
-            </div>
-          </div>
-
-          {/* D. Captured Evidence Snapshots */}
-          {capturedEvidenceList.length > 0 && (
-            <div 
-              style={{ 
-                backgroundColor: 'var(--card-bg)', 
-                borderRadius: 14, 
-                border: '1px solid var(--border-color)',
-                padding: '14px'
-              }}
-            >
-              <h4 style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 800, color: '#ffffff', textTransform: 'uppercase' }}>
-                Captured Evidence Snapshots ({capturedEvidenceList.length})
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <h4 style={{ margin: 0, fontSize: 13, fontWeight: 800, color: '#ffffff', textTransform: 'uppercase' }}>
+                Captured Evidence Register
               </h4>
-              <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
-                {capturedEvidenceList.map((ev, i) => (
+              <span style={{ fontSize: 11, color: '#38bdf8', fontWeight: 700 }}>
+                {capturedEvidenceList.length} Records
+              </span>
+            </div>
+
+            {capturedEvidenceList.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '24px 10px', color: 'var(--text-dim)', fontSize: 12 }}>
+                <Camera size={24} style={{ margin: '0 auto 8px', opacity: 0.4 }} />
+                <div>No evidence captures recorded in this session.</div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 220, overflowY: 'auto' }}>
+                {capturedEvidenceList.map((item) => (
                   <div 
-                    key={ev.id || i}
+                    key={item.id}
                     style={{
-                      minWidth: 100,
-                      backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                      borderRadius: 6,
-                      overflow: 'hidden',
-                      border: '1px solid rgba(255, 255, 255, 0.1)'
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      padding: 8,
+                      backgroundColor: 'rgba(15, 23, 42, 0.5)',
+                      borderRadius: 8,
+                      border: '1px solid rgba(255, 255, 255, 0.06)'
                     }}
                   >
-                    <img src={ev.image} alt="Evidence" style={{ width: '100%', height: 55, objectFit: 'cover' }} />
-                    <div style={{ padding: '4px 6px' }}>
-                      <p style={{ margin: 0, fontSize: 9.5, fontWeight: 700, color: '#ffffff', truncate: true }}>
-                        {ev.defect.split('_')[0]}
-                      </p>
-                      <p style={{ margin: 0, fontSize: 8.5, color: '#94a3b8' }}>{ev.timestamp}</p>
+                    <img
+                      src={item.image}
+                      alt="Evidence"
+                      style={{ width: 44, height: 44, borderRadius: 6, objectFit: 'cover' }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#ffffff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {item.defect}
+                      </div>
+                      <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                        {item.inspector} &bull; {item.timestamp}
+                      </div>
                     </div>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
-
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Full Screen Inspector Camera Modal */}
+      {/* Real Fullscreen Inspector Camera Modal */}
       <InspectorCameraFullscreenModal
         isOpen={showFullscreen}
         onClose={() => setShowFullscreen(false)}
+        inspector={selectedInspector}
+        session={activeSessionForInspector}
+        stream={webrtcStream}
       />
     </div>
   );

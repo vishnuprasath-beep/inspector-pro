@@ -1,14 +1,35 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
 import InspectionModal from '../components/InspectionModal';
-import { Search, Filter, FileText, CheckCircle2, AlertTriangle, Download } from 'lucide-react';
+import { Search, Filter, FileText, CheckCircle2, AlertTriangle, Download, Plus, Calendar, X } from 'lucide-react';
 
-export default function InspectionsPage() {
+export default function InspectionsPage({ initialFilter = 'ALL' }) {
   const [inspections, setInspections] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [statusFilter, setStatusFilter] = useState(initialFilter);
   const [selectedId, setSelectedId] = useState(null);
+
+  // Scheduling State
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [sitesList, setSitesList] = useState([]);
+  const [inspectorsList, setInspectorsList] = useState([]);
+  const [scheduleData, setScheduleData] = useState({
+    title: '',
+    site_id: '',
+    inspector_id: '',
+    scheduled_date: new Date().toISOString().slice(0, 10),
+    priority: 'HIGH',
+    zone_name: 'Zone A - Primary Deck',
+    notes: ''
+  });
+  const [scheduleLoading, setScheduleLoading] = useState(false);
+
+  useEffect(() => {
+    if (initialFilter) {
+      setStatusFilter(initialFilter);
+    }
+  }, [initialFilter]);
 
   const fetchInspections = async () => {
     setLoading(true);
@@ -26,6 +47,62 @@ export default function InspectionsPage() {
     return () => window.removeEventListener('inspectra_storage_update', handleStorageUpdate);
   }, [statusFilter]);
 
+  const handleOpenScheduleModal = async () => {
+    setIsScheduleModalOpen(true);
+    const [sRes, iRes] = await Promise.all([api.getSites(), api.getInspectors()]);
+    if (sRes.success && sRes.data) {
+      setSitesList(sRes.data);
+      if (sRes.data[0] && !scheduleData.site_id) {
+        setScheduleData(prev => ({ ...prev, site_id: sRes.data[0].id }));
+      }
+    }
+    if (iRes.success && iRes.data) {
+      setInspectorsList(iRes.data);
+      if (iRes.data[0] && !scheduleData.inspector_id) {
+        setScheduleData(prev => ({ ...prev, inspector_id: iRes.data[0].id }));
+      }
+    }
+  };
+
+  const handleScheduleSubmit = async (e) => {
+    e.preventDefault();
+    if (!scheduleData.title || !scheduleData.site_id || !scheduleData.inspector_id) return;
+    setScheduleLoading(true);
+    try {
+      const selectedSite = sitesList.find(s => s.id === scheduleData.site_id);
+      const selectedInsp = inspectorsList.find(i => i.id === scheduleData.inspector_id);
+      const payload = {
+        title: scheduleData.title,
+        site_id: scheduleData.site_id,
+        site_name: selectedSite?.name || 'Infrastructure Facility',
+        inspector_id: scheduleData.inspector_id,
+        inspector_name: selectedInsp?.name || 'Field Inspector',
+        scheduled_date: scheduleData.scheduled_date,
+        priority: scheduleData.priority,
+        zone_name: scheduleData.zone_name,
+        notes: scheduleData.notes
+      };
+      const res = await api.createInspection(payload);
+      if (res.success) {
+        setIsScheduleModalOpen(false);
+        setScheduleData({
+          title: '',
+          site_id: sitesList[0]?.id || '',
+          inspector_id: inspectorsList[0]?.id || '',
+          scheduled_date: new Date().toISOString().slice(0, 10),
+          priority: 'HIGH',
+          zone_name: 'Zone A - Primary Deck',
+          notes: ''
+        });
+        await fetchInspections();
+      }
+    } catch (err) {
+      console.error('Failed to schedule inspection:', err);
+    } finally {
+      setScheduleLoading(false);
+    }
+  };
+
   const filtered = inspections.filter(i => {
     const term = search.toLowerCase();
     return (
@@ -38,40 +115,50 @@ export default function InspectionsPage() {
 
   return (
     <div className="page-body">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h1 style={{ fontSize: 24, color: 'var(--text-heading)' }}>Inspection Audits Management</h1>
           <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
             Comprehensive directory of statutory infrastructure inspections, scores, and supervisor sign-offs.
           </p>
         </div>
-        <button 
-          onClick={() => {
-            const headers = ['Audit ID', 'Site Name', 'Inspector', 'Date', 'Compliance Score', 'Status', 'Geofence Verified'];
-            const rows = inspections.map(i => [
-              i.id,
-              `"${(i.site_name || '').replace(/"/g, '""')}"`,
-              `"${(i.inspector_name || '').replace(/"/g, '""')}"`,
-              i.date ? new Date(i.date).toLocaleDateString() : '',
-              `${i.compliance_score || 0}%`,
-              i.status || 'SUBMITTED',
-              i.geofence_verified ? 'YES' : 'NO'
-            ]);
-            const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-            const encodedUri = encodeURI(csvContent);
-            const link = document.createElement('a');
-            link.setAttribute('href', encodedUri);
-            link.setAttribute('download', `inspections_export_${new Date().toISOString().slice(0,10)}.csv`);
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-          }}
-          className="btn btn-secondary btn-sm"
-          style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-        >
-          <Download size={14} />
-          <span>Export CSV</span>
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            onClick={handleOpenScheduleModal}
+            className="btn btn-primary btn-sm"
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
+          >
+            <Plus size={14} />
+            <span>+ Schedule Inspection</span>
+          </button>
+          <button 
+            onClick={() => {
+              const headers = ['Audit ID', 'Site Name', 'Inspector', 'Date', 'Compliance Score', 'Status', 'Geofence Verified'];
+              const rows = inspections.map(i => [
+                i.id,
+                `"${(i.site_name || '').replace(/"/g, '""')}"`,
+                `"${(i.inspector_name || '').replace(/"/g, '""')}"`,
+                i.date ? new Date(i.date).toLocaleDateString() : '',
+                `${i.compliance_score || 0}%`,
+                i.status || 'SUBMITTED',
+                i.geofence_verified ? 'YES' : 'NO'
+              ]);
+              const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+              const encodedUri = encodeURI(csvContent);
+              const link = document.createElement('a');
+              link.setAttribute('href', encodedUri);
+              link.setAttribute('download', `inspections_export_${new Date().toISOString().slice(0,10)}.csv`);
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+            }}
+            className="btn btn-secondary btn-sm"
+            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            <Download size={14} />
+            <span>Export CSV</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter and Search Bar */}
@@ -213,6 +300,145 @@ export default function InspectionsPage() {
           onClose={() => setSelectedId(null)}
           onRefresh={fetchInspections}
         />
+      )}
+
+      {/* Schedule Inspection Modal */}
+      {isScheduleModalOpen && (
+        <div className="modal-backdrop" onClick={() => setIsScheduleModalOpen(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 500 }}>
+            <div className="modal-header">
+              <h3 style={{ margin: 0, color: '#fff', fontSize: 16 }}>Schedule Infrastructure Inspection</h3>
+              <button
+                onClick={() => setIsScheduleModalOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={handleScheduleSubmit}>
+              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div>
+                  <label style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4, display: 'block' }}>
+                    Inspection Title
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    className="input-control"
+                    placeholder="e.g. Quarterly Structural Safety & Bearing Audit"
+                    value={scheduleData.title}
+                    onChange={e => setScheduleData({ ...scheduleData, title: e.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4, display: 'block' }}>
+                    Assigned Facility Site
+                  </label>
+                  <select
+                    className="input-control"
+                    value={scheduleData.site_id}
+                    onChange={e => setScheduleData({ ...scheduleData, site_id: e.target.value })}
+                  >
+                    {sitesList.map(s => (
+                      <option key={s.id} value={s.id}>{s.name} ({s.code || s.id})</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4, display: 'block' }}>
+                    Field Inspector
+                  </label>
+                  <select
+                    className="input-control"
+                    value={scheduleData.inspector_id}
+                    onChange={e => setScheduleData({ ...scheduleData, inspector_id: e.target.value })}
+                  >
+                    {inspectorsList.map(i => (
+                      <option key={i.id} value={i.id}>{i.name} ({i.badge_number || i.code || i.id})</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4, display: 'block' }}>
+                      Scheduled Date
+                    </label>
+                    <input
+                      type="date"
+                      required
+                      className="input-control"
+                      value={scheduleData.scheduled_date}
+                      onChange={e => setScheduleData({ ...scheduleData, scheduled_date: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4, display: 'block' }}>
+                      Priority Level
+                    </label>
+                    <select
+                      className="input-control"
+                      value={scheduleData.priority}
+                      onChange={e => setScheduleData({ ...scheduleData, priority: e.target.value })}
+                    >
+                      <option value="CRITICAL">CRITICAL</option>
+                      <option value="HIGH">HIGH</option>
+                      <option value="MEDIUM">MEDIUM</option>
+                      <option value="LOW">LOW</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4, display: 'block' }}>
+                    Target Zone / Deck Area
+                  </label>
+                  <input
+                    type="text"
+                    className="input-control"
+                    placeholder="e.g. Zone A - Primary Deck & Abutment A-1"
+                    value={scheduleData.zone_name}
+                    onChange={e => setScheduleData({ ...scheduleData, zone_name: e.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4, display: 'block' }}>
+                    Supervisor Instructions & Directives
+                  </label>
+                  <textarea
+                    rows={2}
+                    className="input-control"
+                    placeholder="Provide specific hold points or statutory checklist requirements..."
+                    value={scheduleData.notes}
+                    onChange={e => setScheduleData({ ...scheduleData, notes: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  onClick={() => setIsScheduleModalOpen(false)}
+                  className="btn btn-secondary"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={scheduleLoading}
+                  className="btn btn-primary"
+                  style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                >
+                  <CheckCircle2 size={15} />
+                  <span>{scheduleLoading ? 'Scheduling...' : 'Confirm Assignment'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

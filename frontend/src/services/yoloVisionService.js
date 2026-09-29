@@ -154,31 +154,49 @@ export function runRealtimeYoloDetection({
     const origH = activeSource.image_meta?.original_height || 640;
 
     const mapped = activeSource.detections.map((det, idx) => {
-      const box = det.box || {};
-      const pctX = Math.round(((box.x1 || 0) / origW) * 100);
-      const pctY = Math.round(((box.y1 || 0) / origH) * 100);
-      const pctW = Math.round(((box.width || 100) / origW) * 100);
-      const pctH = Math.round(((box.height || 100) / origH) * 100);
+      const box = det.bbox || det.box || {};
+      const boxX = box.x !== undefined ? box.x : (box.x1 || 0);
+      const boxY = box.y !== undefined ? box.y : (box.y1 || 0);
+      const boxW = box.width || 100;
+      const boxH = box.height || 100;
 
-      const color = det.severity === 'CRITICAL' ? '#ef4444' 
-        : det.severity === 'HIGH' ? '#f97316'
-        : det.severity === 'MEDIUM' ? '#f59e0b'
-        : '#10b981';
+      const pctX = Math.round((boxX / origW) * 100);
+      const pctY = Math.round((boxY / origH) * 100);
+      const pctW = Math.round((boxW / origW) * 100);
+      const pctH = Math.round((boxH / origH) * 100);
+
+      const isDefect = det.category === 'DEFECT' || det.priority === 1;
+      const color = isDefect
+        ? (det.severity === 'CRITICAL' ? '#ef4444' : '#f97316')
+        : (det.severity === 'CRITICAL' ? '#ef4444' : det.severity === 'HIGH' ? '#f59e0b' : '#10b981');
 
       return {
-        id: `det_real_${idx}_${Date.now()}`,
-        defectKey: det.class,
-        label: det.class.replace(/-/g, ' '),
-        severity: det.severity || 'MEDIUM',
+        id: det.id || `det_real_${idx}_${Date.now()}`,
+        defectKey: det.className || det.class,
+        className: det.className || det.class,
+        class: det.class || det.className,
+        category: det.category || (isDefect ? 'DEFECT' : 'PPE'),
+        priority: det.priority || (isDefect ? 1 : 2),
+        label: (det.class || det.className || 'Defect').replace(/[-_]/g, ' '),
+        severity: det.severity || 'HIGH',
         color,
         confidenceScore: parseFloat((det.confidence * 100).toFixed(1)),
-        specCode: det.statutory_ref || 'IS 456 / BOCW',
+        confidence: det.confidence,
+        specCode: det.statutory_ref || 'IS 456:2000 / BOCW',
         mitigationAdvice: det.recommended_action || 'Inspect and apply standard safety controls.',
+        requiresHumanVerification: det.requiresHumanVerification ?? true,
+        verificationAdvisory: det.verification_advisory || 'AI visual indication — requires inspector verification.',
         box: {
-          x: Math.max(2, Math.min(90, pctX)),
-          y: Math.max(2, Math.min(90, pctY)),
-          width: Math.max(8, Math.min(95, pctW)),
-          height: Math.max(8, Math.min(95, pctH))
+          x: Math.max(1, Math.min(95, pctX)),
+          y: Math.max(1, Math.min(95, pctY)),
+          width: Math.max(4, Math.min(98, pctW)),
+          height: Math.max(4, Math.min(98, pctH))
+        },
+        rawBbox: {
+          x: boxX,
+          y: boxY,
+          width: boxW,
+          height: boxH
         }
       };
     });
@@ -187,9 +205,11 @@ export function runRealtimeYoloDetection({
 
     return {
       timestamp: Date.now(),
-      modelEngine: activeSource.model?.name ? `ONNX Runtime (${activeSource.model.name})` : 'YOLOv8 ONNX Neural Engine',
+      modelEngine: activeSource.model?.name ? `ONNX Runtime (${activeSource.model.name})` : 'YOLOv8 Dual-Channel Engine',
       fps: activeSource.inference_ms ? Math.round(1000 / Math.max(activeSource.inference_ms, 1)) : 24,
       detectionsCount: mapped.length,
+      defectCount: mapped.filter(m => m.category === 'DEFECT').length,
+      ppeCount: mapped.filter(m => m.category === 'SAFETY' || m.category === 'PPE' || m.category === 'PERSON').length,
       cameraActive,
       primaryFinding: primary ? primary.label : 'Area Clear (No Defects Detected)',
       primarySeverity: primary ? primary.severity : 'COMPLIANT',

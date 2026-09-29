@@ -6,15 +6,17 @@ const { v4: uuidv4 } = require('uuid');
  * Transparent Site Safety Score Calculation Engine
  */
 function calculateSiteSafetyScore(siteId) {
-  const site = db.getById(TABLES.SITES, siteId);
+  const allSites = db.getAll(TABLES.SITES);
+  const site = db.getById(TABLES.SITES, siteId) || allSites.find(s => s.id === siteId || s.code === siteId || s.code?.toLowerCase() === String(siteId).toLowerCase());
   if (!site) return null;
 
-  const inspections = db.find(TABLES.INSPECTIONS, { site_id: siteId });
+  const actualSiteId = site.id;
+  const inspections = db.find(TABLES.INSPECTIONS, { site_id: actualSiteId });
   const allDefects = db.getAll(TABLES.DEFECTS);
   const siteDefects = allDefects.filter(d => {
-    if (d.site_id && String(d.site_id) === String(siteId)) return true;
+    if (d.site_id && (String(d.site_id) === String(actualSiteId) || String(d.site_id) === String(site.code))) return true;
     const insp = inspections.find(i => i.id === d.inspection_id);
-    return insp && String(insp.site_id) === String(siteId);
+    return insp && String(insp.site_id) === String(actualSiteId);
   });
 
   const openDefects = siteDefects.filter(d => d.status !== 'CLOSED' && d.status !== 'RESOLVED');
@@ -112,6 +114,7 @@ function calculateSiteSafetyScore(siteId) {
     },
     deductions,
     bonuses,
+    formula: 'Score = 100 - (Critical x 15) - (High x 8) - (Medium x 3) - (Recurring x 10) + (Passed Inspections x 5)',
     calculated_at: new Date().toISOString()
   };
 }
@@ -153,7 +156,14 @@ async function getAllSites(req, res) {
       };
     });
 
-    res.json({ success: true, count: enrichedSites.length, data: enrichedSites });
+    let scopedSites = enrichedSites;
+    // Data Scoping: Supervisor should only see data belonging to their assigned projects/sites/teams
+    if (req.user && req.user.role === 'SUPERVISOR') {
+      const supervisorSites = enrichedSites.filter(s => s.supervisor_id === req.user.id);
+      scopedSites = supervisorSites.length > 0 ? supervisorSites : enrichedSites;
+    }
+
+    res.json({ success: true, count: scopedSites.length, data: scopedSites });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -261,6 +271,11 @@ async function verifyQrCode(req, res) {
         qr_code: raw,
         site: matchedSite,
         zone: matchedZone || null,
+        site_id: matchedSite?.id,
+        site_name: matchedSite?.name,
+        site_code: matchedSite?.code,
+        zone_id: matchedZone?.id || null,
+        zone_name: matchedZone?.name || null,
         verified_at: new Date().toISOString()
       }
     });

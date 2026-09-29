@@ -3,7 +3,7 @@
  * Enables offline audits, asset caching, and background sync
  */
 
-const CACHE_NAME = 'inspectra-cloud-v3';
+const CACHE_NAME = 'inspectra-cloud-v7';
 
 // Activate Event: Clear ALL Old Legacy Caches immediately
 self.addEventListener('activate', (event) => {

@@ -180,26 +180,192 @@ async function updateInspector(req, res) {
 }
 
 /**
- * Update User Profile
+ * Update User Profile with RBAC protection
  */
 async function updateUser(req, res) {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const user = db.getById(TABLES.USERS, id) || db.getAll(TABLES.USERS).find(u => u.username === id);
+    if (!user) return res.status(404).json({ success: false, error: 'User not found.' });
+
+    const isAdmin = req.user?.role === ROLES.ADMIN;
+    if (!isAdmin && req.user?.id !== user.id) {
+      return res.status(403).json({ success: false, error: 'Forbidden: You may only update your own profile.' });
+    }
+
+    const allowedFields = ['name', 'email', 'phone', 'avatar_url', 'post'];
+    const updates = {};
+    for (const field of allowedFields) {
+      if (Object.prototype.hasOwnProperty.call(req.body, field)) updates[field] = req.body[field];
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body, 'password')) {
+      if (typeof req.body.password !== 'string' || req.body.password.length < 8) {
+        return res.status(400).json({ success: false, error: 'Password must be at least 8 characters.' });
+      }
+      updates.password_hash = require('bcryptjs').hashSync(req.body.password, 10);
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ success: false, error: 'No valid profile fields provided.' });
+    }
+
+    db.update(TABLES.USERS, user.id, updates);
+    const updated = db.getById(TABLES.USERS, user.id);
+    const { password_hash, ...safe } = updated;
+    res.json({ success: true, data: safe });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Create New User (ADMIN only)
+ */
+async function createUser(req, res) {
+  try {
+    const { name, email, username, password, role, post, phone, assigned_site_id, assigned_site_name } = req.body;
+
+    if (!name || !username || !email) {
+      return res.status(400).json({ success: false, error: 'Name, username, and email are required.' });
+    }
+    if (typeof password !== 'string' || password.length < 8) {
+      return res.status(400).json({ success: false, error: 'A password of at least 8 characters is required.' });
+    }
+
+    const allUsers = db.getAll(TABLES.USERS);
+    const existing = allUsers.find(u => u.username.toLowerCase() === username.toLowerCase() || u.email.toLowerCase() === email.toLowerCase());
+    if (existing) {
+      return res.status(400).json({ success: false, error: 'User with this username or email already exists.' });
+    }
+
+    const bcrypt = require('bcryptjs');
+    const { v4: uuidv4 } = require('uuid');
+    const userId = `usr-${uuidv4().slice(0, 8)}`;
+    const userRole = role && Object.values(ROLES).includes(role.toUpperCase()) ? role.toUpperCase() : ROLES.INSPECTOR;
+
+    const newUser = {
+      id: userId,
+      name,
+      email,
+      username,
+      password_hash: bcrypt.hashSync(password, 10),
+      role: userRole,
+      post: post || (userRole === ROLES.ADMIN ? 'Administrator' : userRole === ROLES.SUPERVISOR ? 'Field Supervisor' : userRole === ROLES.DIRECTOR ? 'Director' : 'Field Inspector'),
+      phone: phone || '+91 98401 00000',
+      avatar_url: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150',
+      status: 'ACTIVE',
+      created_at: new Date().toISOString()
+    };
+
+    db.insert(TABLES.USERS, newUser);
+
+    // If role is INSPECTOR, also create inspector record
+    if (userRole === ROLES.INSPECTOR) {
+      const inspId = `insp-${uuidv4().slice(0, 8)}`;
+      const newInspector = {
+        id: inspId,
+        user_id: userId,
+        name,
+        employee_code: `INSP-${new Date().getFullYear()}-${username.toUpperCase()}`,
+        specialization: req.body.specialization || 'Civil & Structural Engineering',
+        qualification: req.body.qualification || 'B.Tech Civil Engineering',
+        assigned_site_id: assigned_site_id || 'site-01',
+        assigned_site_name: assigned_site_name || 'Delhi Metro Central Terminal (Phase 2)',
+        current_lat: 28.6289,
+        current_lng: 77.2219,
+        last_active_at: new Date().toISOString(),
+        assigned_sites_count: 1,
+        status: 'AVAILABLE'
+      };
+      db.insert(TABLES.INSPECTORS, newInspector);
+    }
+
+    const { password_hash, ...safeUser } = newUser;
+    res.status(201).json({ success: true, message: 'User created successfully', data: safeUser });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Delete User (ADMIN only)
+ */
+async function deleteUser(req, res) {
+  try {
+    const { id } = req.params;
+
+    if (req.user && req.user.id === id) {
+      return res.status(400).json({ success: false, error: 'Cannot delete your own active administrator account.' });
+    }
 
     const user = db.getById(TABLES.USERS, id);
     if (!user) {
-      const allUsers = db.getAll(TABLES.USERS);
-      const found = allUsers.find(u => u.id === id || u.username === id);
-      if (!found) {
-        return res.status(404).json({ success: false, error: 'User not found.' });
-      }
-      db.update(TABLES.USERS, found.id, updates);
-      return res.json({ success: true, data: db.getById(TABLES.USERS, found.id) });
+      return res.status(404).json({ success: false, error: 'User not found.' });
     }
 
-    db.update(TABLES.USERS, id, updates);
-    res.json({ success: true, data: db.getById(TABLES.USERS, id) });
+    db.delete(TABLES.USERS, id);
+
+    // Delete associated inspector record if any
+    const allInspectors = db.getAll(TABLES.INSPECTORS);
+    const linkedInsp = allInspectors.find(i => i.user_id === id);
+    if (linkedInsp) {
+      db.delete(TABLES.INSPECTORS, linkedInsp.id);
+    }
+
+    res.json({ success: true, message: 'User deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Update User Role (ADMIN only)
+ */
+async function updateUserRole(req, res) {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (!role || !Object.values(ROLES).includes(role.toUpperCase())) {
+      return res.status(400).json({ success: false, error: `Invalid role. Allowed roles: ${Object.values(ROLES).join(', ')}` });
+    }
+
+    const user = db.getById(TABLES.USERS, id);
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    db.update(TABLES.USERS, id, { role: role.toUpperCase() });
+    const updated = db.getById(TABLES.USERS, id);
+    const { password_hash, ...safe } = updated;
+    res.json({ success: true, message: 'User role updated successfully', data: safe });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Update User Status (Activate/Deactivate) (ADMIN only)
+ */
+async function updateUserStatus(req, res) {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!status || !['ACTIVE', 'INACTIVE', 'SUSPENDED'].includes(status.toUpperCase())) {
+      return res.status(400).json({ success: false, error: 'Invalid status. Allowed: ACTIVE, INACTIVE, SUSPENDED' });
+    }
+
+    const user = db.getById(TABLES.USERS, id);
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    db.update(TABLES.USERS, id, { status: status.toUpperCase() });
+    const updated = db.getById(TABLES.USERS, id);
+    const { password_hash, ...safe } = updated;
+    res.json({ success: true, message: `User status set to ${status.toUpperCase()}`, data: safe });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -210,5 +376,9 @@ module.exports = {
   getAllInspectors,
   getInspectorById,
   updateInspector,
-  updateUser
+  updateUser,
+  createUser,
+  deleteUser,
+  updateUserRole,
+  updateUserStatus
 };

@@ -32,6 +32,7 @@
         window.addEventListener('load', function() {
           navigator.serviceWorker.register('/sw.js')
             .then(function(reg) {
+              reg.update();
               console.log('[PWA] Service Worker active with scope:', reg.scope);
             })
             .catch(function(err) {

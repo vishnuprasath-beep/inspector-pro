@@ -5,11 +5,9 @@ import { ThemeProvider } from './context/ThemeContext';
 
 import InstallAppBanner from './components/InstallAppBanner';
 
-// Dedicated Completely Separate Role Portals
+// 2 Main Portal Interfaces
 import FieldInspectorApp from './pages/FieldInspectorApp';
 import AdminDashboardApp from './pages/AdminDashboardApp';
-import DirectorDashboardApp from './pages/DirectorDashboardApp';
-import SupervisorDashboardApp from './pages/SupervisorDashboardApp';
 import LoginPage from './pages/LoginPage';
 import AccessDenied from './components/AccessDenied';
 import { useAuth } from './context/AuthContext';
@@ -28,52 +26,65 @@ function AppRouter({ currentPath }) {
   const { user } = useAuth();
   const p = normalizePath(currentPath || window.location.pathname);
 
-  // 1. Not logged in: Protected routes redirect to login
+  // 1. Unauthenticated users:
   if (!user) {
+    // Both "/" and "/login" display the LoginPage directly.
+    if (p === '/' || p === '/login') {
+      return <LoginPage />;
+    }
+    // If an unauthenticated user manually enters any protected route,
+    // redirect them to /login
+    if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      try {
+        window.history.replaceState({}, '', '/login');
+      } catch (e) {}
+    }
     return <LoginPage initialRedirectPath={p} />;
   }
 
-  // If already authenticated and on /login or /, auto-route to the user's specific portal
+  // 2. Authenticated user visiting "/" or "/login":
+  // Route them directly to their authorized portal
   if (p === '/login' || p === '/') {
-    if (user.role === 'ADMIN') return <AdminDashboardApp />;
-    if (user.role === 'DIRECTOR') return <DirectorDashboardApp />;
-    if (user.role === 'SUPERVISOR') return <SupervisorDashboardApp />;
+    const target = user.role === 'INSPECTOR' ? '/field-inspector' : '/admin-dashboard';
+    if (typeof window !== 'undefined' && window.location.pathname !== target) {
+      try {
+        window.history.replaceState({}, '', target);
+      } catch (e) {}
+    }
     if (user.role === 'INSPECTOR') return <FieldInspectorApp />;
-  }
-
-  // 2. Admin Dashboard: Strictly ADMIN only
-  if (p === '/admin-dashboard') {
-    if (user.role !== 'ADMIN') {
-      return <AccessDenied userRole={user.role} targetRoute={p} requiredRole="ADMIN" />;
+    if (user.role === 'ADMIN' || user.role === 'SUPERVISOR' || user.role === 'DIRECTOR') {
+      return <AdminDashboardApp />;
     }
-    return <AdminDashboardApp />;
   }
 
-  // 3. Director Dashboard: Strictly DIRECTOR only
-  if (p === '/director-dashboard') {
-    if (user.role !== 'DIRECTOR') {
-      return <AccessDenied userRole={user.role} targetRoute={p} requiredRole="DIRECTOR" />;
+  // 3. Portal 1: Field Inspector Portal (Used ONLY by Inspectors)
+  if (p === '/field-inspector' || p === '/inspector') {
+    if (user.role === 'INSPECTOR') return <FieldInspectorApp />;
+    return <AccessDenied userRole={user.role} targetRoute={p} requiredRole="INSPECTOR" />;
+  }
+
+  // 4. Portal 2: Management Portal (Used by Admin, Supervisor, and Director)
+  if (p === '/admin-dashboard' || p === '/admin') {
+    if (user.role === 'ADMIN' || user.role === 'SUPERVISOR' || user.role === 'DIRECTOR') {
+      return <AdminDashboardApp />;
     }
-    return <DirectorDashboardApp />;
+    return <AccessDenied userRole={user.role} targetRoute={p} requiredRole="MANAGEMENT" />;
   }
 
-  // 4. Supervisor Dashboard: Strictly SUPERVISOR only
-  if (p === '/supervisor-dashboard') {
-    if (user.role !== 'SUPERVISOR') {
-      return <AccessDenied userRole={user.role} targetRoute={p} requiredRole="SUPERVISOR" />;
+  // Backward-compatibility: Legacy routes gracefully redirect to /admin-dashboard
+  if (p === '/director-dashboard' || p === '/director' || p === '/supervisor-dashboard' || p === '/supervisor') {
+    if (user.role === 'ADMIN' || user.role === 'SUPERVISOR' || user.role === 'DIRECTOR') {
+      if (typeof window !== 'undefined') {
+        try {
+          window.history.replaceState({}, '', '/admin-dashboard');
+        } catch (e) {}
+      }
+      return <AdminDashboardApp />;
     }
-    return <SupervisorDashboardApp />;
+    return <AccessDenied userRole={user.role} targetRoute={p} requiredRole="MANAGEMENT" />;
   }
 
-  // 5. Field Inspector Portal: Strictly INSPECTOR only
-  if (p === '/field-inspector') {
-    if (user.role !== 'INSPECTOR') {
-      return <AccessDenied userRole={user.role} targetRoute={p} requiredRole="INSPECTOR" />;
-    }
-    return <FieldInspectorApp />;
-  }
-
-  // 6. Unknown / Unauthorized route
+  // 5. Any other unknown route:
   return <AccessDenied userRole={user.role} targetRoute={p} />;
 }
 

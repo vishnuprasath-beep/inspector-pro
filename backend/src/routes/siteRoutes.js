@@ -9,6 +9,6 @@ router.post('/verify-qr', authenticateJWT, siteController.verifyQrCode);
 router.get('/:id', authenticateJWT, siteController.getSiteById);
 router.get('/:id/safety-score', authenticateJWT, siteController.getSiteSafetyScore);
 router.get('/:id/geofence', authenticateJWT, siteController.getSiteGeofence);
-router.post('/', authenticateJWT, authorizeRoles('ADMIN', 'DIRECTOR', 'SUPERVISOR'), siteController.createSite);
+router.post('/', authenticateJWT, authorizeRoles('ADMIN'), siteController.createSite);
 
 module.exports = router;
